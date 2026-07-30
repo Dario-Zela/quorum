@@ -15,7 +15,9 @@ checking; and linearizability verification with
 - Linearizable KV service (Get/Put/Delete/CAS) over gRPC with client-session deduplication.
 - Deterministic simulation: every failure is replayable from a seed; invariants checked after
   every step; linearizability checked with porcupine.
-- Live demo: 5-node Docker Compose cluster surviving a leader-killing chaos loop under client load.
+- Demo: a 5-node Docker Compose cluster surviving a leader-killing chaos loop under client
+  load — re-run nightly on GitHub Actions and published to a status page, so the demo is
+  continuously *verified*, not just recorded ([ADR-003](docs/adr/003-ci-verified-demo.md)).
 
 ## Non-goals (v1)
 

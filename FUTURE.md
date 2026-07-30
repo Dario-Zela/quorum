@@ -23,8 +23,10 @@ Knowing *why* each exists (and what it costs) is the point of this file.
 - **TLS/auth on gRPC**: mechanical, but out of scope for a demo cluster.
 - **Jepsen run**: a week+ of harness work, deliberately skipped — porcupine-in-sim checks the
   same property with perfect reproducibility, the better trade for a solo project.
-- **Live status page** (GitHub Pages): once the demo cluster runs on a VM, a cron on the VM
-  pushes a `status.json` snapshot (per-node role/term/commitIndex from the status RPC, chaos
-  kill log, throughput) to the `gh-pages` branch; a static dashboard renders it and degrades
-  to the recorded demo when the data goes stale. Push-based beats live polling: no public
-  unauthenticated endpoint, no TLS on the VM, page never breaks.
+- **Dedicated-hardware benchmarks**: the demo and its status page run in CI
+  ([ADR-003](docs/adr/003-ci-verified-demo.md)); GitHub runners are shared hardware, so those
+  numbers are indicative. A free VM (e.g. Oracle Always Free ARM) exists in the plan solely to
+  re-run the bench table on dedicated hardware with honest labeling.
+- **Public "run the demo" button** on the status page: rejected, not deferred — a static page
+  can't hold a dispatch token safely, and a rate-limited token-holding middleman is machinery
+  that "fork the repo and click Run workflow" already covers ([ADR-003](docs/adr/003-ci-verified-demo.md)).

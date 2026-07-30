@@ -1,6 +1,12 @@
 # Design Doc — Quorum (Raft Distributed KV Store)
 *Deep project · 4–6 weekends · Go 1.22+, gRPC, Docker*
 
+> **Amendment (2026-07-30):** the demo/deployment strategy in §1 and §9 ("free VM") is
+> superseded by [ADR-003](adr/003-ci-verified-demo.md) — the chaos demo runs on GitHub
+> Actions (nightly cron + manual dispatch) and publishes to a GitHub Pages status page;
+> the free VM is a stretch goal for dedicated-hardware benchmarks only. The rest of this
+> document is the v1 contract as written.
+
 ## 1. Goals & non-goals
 
 **Goals**
