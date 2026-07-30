@@ -1,1 +1,13 @@
-[]
+[
+  {
+    "when": "2026-07-30 17:27",
+    "commit": "253a128e36858585b20cd94a573702e4abe2f82c",
+    "run_url": "https://github.com/Dario-Zela/quorum/actions/runs/30565785998",
+    "ops": 222525,
+    "errs": 0,
+    "throughput": "1484",
+    "p50": "12.970689ms",
+    "p99": "112.19569ms",
+    "kills": 5
+  }
+]
