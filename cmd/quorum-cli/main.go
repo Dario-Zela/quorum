@@ -128,6 +128,7 @@ func bench(addrs map[uint64]string, clients int, duration time.Duration, readFra
 	var ops, errs atomic.Int64
 	var mu sync.Mutex
 	var lats []time.Duration
+	errKinds := map[string]int{}
 
 	deadline := time.Now().Add(duration)
 	var wg sync.WaitGroup
@@ -156,6 +157,9 @@ func bench(addrs map[uint64]string, clients int, duration time.Duration, readFra
 				n++
 				if err != nil {
 					errs.Add(1)
+					mu.Lock()
+					errKinds[err.Error()]++
+					mu.Unlock()
 					continue
 				}
 				ops.Add(1)
@@ -177,6 +181,9 @@ func bench(addrs map[uint64]string, clients int, duration time.Duration, readFra
 	fmt.Printf("clients=%d duration=%s reads=%.0f%% stale=%v\n", clients, duration, readFrac*100, stale)
 	fmt.Printf("ops=%d errs=%d throughput=%.0f ops/s\n", ops.Load(), errs.Load(), float64(ops.Load())/duration.Seconds())
 	fmt.Printf("latency p50=%s p99=%s\n", pct(0.50), pct(0.99))
+	for msg, n := range errKinds {
+		fmt.Printf("error[%d]: %s\n", n, msg)
+	}
 }
 
 func must(ok bool, usage string) {
