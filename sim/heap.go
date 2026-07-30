@@ -26,6 +26,15 @@ const (
 	EvHeal
 	// EvRestart brings a crashed node back up.
 	EvRestart
+	// EvClientStart dispatches a client actor's next attempt (invoking a
+	// fresh op if none is pending).
+	EvClientStart
+	// EvClientReq delivers a client request to a node's server logic.
+	EvClientReq
+	// EvClientResp delivers a server response back to a client actor.
+	EvClientResp
+	// EvClientTimeout re-enters DISCOVER if the attempt got no answer.
+	EvClientTimeout
 )
 
 // Event is one scheduled occurrence.
@@ -37,6 +46,11 @@ type Event struct {
 	Node raft.NodeID // target
 	From raft.NodeID // EvDeliver: sender
 	Msg  raft.Message
+
+	Client  int // client-protocol events: actor index
+	Attempt uint64
+	Cmd     []byte         // EvClientReq: encoded command
+	Out     *clientOutcome // EvClientResp
 }
 
 // eventHeap is a min-heap keyed by (At, Seq). Implemented directly rather

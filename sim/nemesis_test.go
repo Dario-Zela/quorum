@@ -32,7 +32,7 @@ func TestNemesisSoakSafety(t *testing.T) {
 				t.Fatalf("REPRO: seed=%d — %v", seed, err)
 			}
 			if l, ok := w.AnyLeader(); ok && !w.Node(l).down {
-				if _, ok := w.Propose(l, []byte(fmt.Sprintf("s%d-p%d", seed, proposals))); ok {
+				if _, ok := w.Propose(l, testPayload(fmt.Sprintf("s%d-p%d", seed, proposals))); ok {
 					proposals++
 				}
 			}
@@ -49,7 +49,7 @@ func TestNemesisSoakSafety(t *testing.T) {
 		if w.violation != nil {
 			t.Fatalf("REPRO: seed=%d — violation on quiesce: %v", seed, w.violation)
 		}
-		final := []byte(fmt.Sprintf("s%d-final", seed))
+		final := testPayload(fmt.Sprintf("s%d-final", seed))
 		var rcpt raft.Receipt
 		err := w.Run(w.events+200_000, func(w *World) bool {
 			if rcpt.Index == 0 {

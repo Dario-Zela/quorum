@@ -47,7 +47,7 @@ func TestReplicationAcrossSeeds(t *testing.T) {
 
 		var last raft.Receipt
 		for k := 0; k < 5; k++ {
-			rcpt, ok := w.Propose(leader, []byte(fmt.Sprintf("cmd-%d", k)))
+			rcpt, ok := w.Propose(leader, testPayload(fmt.Sprintf("cmd-%d", k)))
 			if !ok {
 				t.Fatalf("REPRO: seed=%d — leader %d refused proposal", seed, leader)
 			}
@@ -70,14 +70,14 @@ func TestReplicationAcrossSeeds(t *testing.T) {
 			}
 		}
 		e, ok := w.CommittedEntry(last.Index)
-		if !ok || !bytes.Equal(e.Data, []byte("cmd-4")) {
+		if !ok || !bytes.Equal(e.Data, testPayload("cmd-4")) {
 			t.Fatalf("REPRO: seed=%d — committed entry at %d is %+v", seed, last.Index, e)
 		}
 		// A follower must refuse proposals (no receipt — server layer
 		// redirects via the leader hint).
 		for _, id := range w.IDs() {
 			if id != leader && w.Node(id).R.Status().Role == raft.Follower {
-				if _, ok := w.Propose(id, []byte("nope")); ok {
+				if _, ok := w.Propose(id, testPayload("nope")); ok {
 					t.Fatalf("REPRO: seed=%d — follower %d accepted a proposal", seed, id)
 				}
 				break
@@ -162,7 +162,8 @@ func figureEight(t *testing.T, seed int64, unsafe bool) *Violation {
 		}
 	}
 	splitSets(w, []raft.NodeID{l1, f2}, rest)
-	rx, ok := w.Propose(l1, []byte("x"))
+	xData := testPayload("x")
+	rx, ok := w.Propose(l1, xData)
 	if !ok {
 		fatalf("L1 refused x")
 	}
@@ -198,7 +199,7 @@ func figureEight(t *testing.T, seed int64, unsafe bool) *Violation {
 	// queued on the heap ("on the wire"), so L2 is also partitioned off:
 	// reachability is checked at delivery time, which eats those messages.
 	// The survivors reconnect fully.
-	if _, ok := w.Propose(l2, []byte("y")); !ok {
+	if _, ok := w.Propose(l2, testPayload("y")); !ok {
 		fatalf("L2 refused y")
 	}
 	w.Crash(l2)
@@ -232,7 +233,7 @@ func figureEight(t *testing.T, seed int64, unsafe bool) *Violation {
 		fatalf("committing x under W: %v", err)
 	}
 	got, ok := w.CommittedEntry(rx.Index)
-	if !ok || !bytes.Equal(got.Data, []byte("x")) {
+	if !ok || !bytes.Equal(got.Data, xData) {
 		fatalf("committed entry at %d is %+v, want x", rx.Index, got)
 	}
 
@@ -252,10 +253,10 @@ func figureEight(t *testing.T, seed int64, unsafe bool) *Violation {
 	if err == nil {
 		// Convergence check (real rule): L2's log must adopt x.
 		e, ok := entryAt(w.Node(l2), rx.Index)
-		if !ok || !bytes.Equal(e.Data, []byte("x")) || e.Term != rx.Term {
+		if !ok || !bytes.Equal(e.Data, xData) || e.Term != rx.Term {
 			fatalf("L2 never converged to x at %d: %+v", rx.Index, e)
 		}
-		if final, _ := w.CommittedEntry(rx.Index); !bytes.Equal(final.Data, []byte("x")) {
+		if final, _ := w.CommittedEntry(rx.Index); !bytes.Equal(final.Data, xData) {
 			fatalf("committed x was replaced by %+v", final)
 		}
 		return nil

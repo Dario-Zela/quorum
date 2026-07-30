@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"strings"
 
+	"github.com/Dario-Zela/quorum/kv"
 	"github.com/Dario-Zela/quorum/raft"
 	"github.com/Dario-Zela/quorum/storage/memstore"
 )
@@ -33,6 +34,12 @@ type Config struct {
 	MaxLatency int   // message delay drawn uniformly from [1, MaxLatency]; default 3
 	Trace      bool  // record the full event trace (determinism diffs, debugging)
 	Nemesis    *NemesisConfig
+
+	// Clients spawns simulated client actors running the retry state
+	// machine, each performing ClientOps random KV writes; their histories
+	// feed the linearizability checker.
+	Clients   int
+	ClientOps int
 }
 
 // NodeShell wraps one raft core with its durable storage: what survives a
@@ -41,6 +48,12 @@ type NodeShell struct {
 	ID    raft.NodeID
 	R     *raft.Raft
 	Store *memstore.Store
+
+	// The replicated state machine and the write path's waiters. Both are
+	// volatile: a crash loses them, and recovery rebuilds the KV by
+	// re-applying the log from the start.
+	KV      *kv.Store
+	Waiters *kv.Waiters
 
 	down        bool
 	pausedUntil LogicalTime
@@ -73,6 +86,7 @@ type World struct {
 	trace      strings.Builder
 	violation  *Violation
 	nemesisOff bool
+	clients    []*clientActor
 }
 
 // New builds a world of cfg.Nodes fresh followers and schedules their ticks.
@@ -95,8 +109,10 @@ func New(cfg Config) *World {
 	}
 	for _, id := range ids {
 		w.nodes = append(w.nodes, &NodeShell{
-			ID:    id,
-			Store: memstore.New(),
+			ID:      id,
+			Store:   memstore.New(),
+			KV:      kv.NewStore(),
+			Waiters: kv.NewWaiters(),
 			R: raft.New(raft.Config{
 				ID:    id,
 				Peers: ids,
@@ -113,7 +129,21 @@ func New(cfg Config) *World {
 		}
 		w.push(Event{At: cfg.Nemesis.Every, Kind: EvNemesis})
 	}
+	for i := 0; i < cfg.Clients; i++ {
+		w.clients = append(w.clients, w.newClientActor(i, cfg.ClientOps))
+		w.push(Event{At: LogicalTime(2 + i), Kind: EvClientStart, Client: i})
+	}
 	return w
+}
+
+// ClientsDone reports whether every client actor finished its workload.
+func (w *World) ClientsDone() bool {
+	for _, a := range w.clients {
+		if !a.Done() {
+			return false
+		}
+	}
+	return true
 }
 
 // QuietNemesis stops fault injection and repairs the world: partitions
@@ -175,6 +205,8 @@ func (w *World) Restart(id raft.NodeID) {
 	shell.down = false
 	shell.pausedUntil = 0
 	shell.restarts++
+	shell.KV = kv.NewStore()        // volatile: rebuilt by replaying applies
+	shell.Waiters = kv.NewWaiters() // volatile: clients re-learn via timeouts
 	shell.R = raft.Restore(raft.Config{
 		ID:    id,
 		Peers: w.IDs(),
@@ -303,6 +335,104 @@ func (w *World) stepOnce() {
 		if w.Node(e.Node).down {
 			w.Restart(e.Node)
 		}
+	case EvClientStart:
+		w.clientDispatch(e)
+	case EvClientReq:
+		w.serveClientReq(e, shell)
+	case EvClientResp:
+		w.clientOnResp(e)
+	case EvClientTimeout:
+		a := w.clients[e.Client]
+		if a.pendingCmd != nil && a.attempt == e.Attempt {
+			w.tracef("t=%d #%d client %d timeout attempt=%d", e.At, e.Seq, e.Client, e.Attempt)
+			w.push(Event{At: e.At + 1, Kind: EvClientStart, Client: e.Client})
+		}
+	}
+}
+
+// clientDispatch sends the actor's next attempt: invoke a fresh op if none
+// is pending, pick a target (hint or round-robin with backoff), and arm a
+// timeout for this attempt.
+func (w *World) clientDispatch(e Event) {
+	a := w.clients[e.Client]
+	if a.Done() {
+		return
+	}
+	if a.pendingCmd == nil {
+		a.invoke(e.At)
+		w.tracef("t=%d #%d client %d invoke %v seq=%d", e.At, e.Seq, e.Client, a.pendingCmd.Op, a.pendingCmd.Seq)
+	}
+	target, delay := a.nextTarget(len(w.nodes))
+	a.attempt++
+	w.tracef("t=%d #%d client %d -> node %d attempt=%d", e.At, e.Seq, e.Client, target, a.attempt)
+	w.push(Event{At: e.At + delay, Kind: EvClientReq, Node: target, Client: e.Client, Attempt: a.attempt, Cmd: kv.EncodeCommand(a.pendingCmd)})
+	w.push(Event{At: e.At + delay + clientTimeout, Kind: EvClientTimeout, Client: e.Client, Attempt: a.attempt})
+}
+
+// serveClientReq is the sim's stand-in for the server's write path: redirect
+// non-leaders via the hint, otherwise Propose and register a waiter keyed on
+// the Receipt. The waiter's callback fires from the apply loop (or a
+// step-down) and schedules the response back to the client.
+func (w *World) serveClientReq(e Event, shell *NodeShell) {
+	if shell.down {
+		return // request lost; the client's timeout covers it
+	}
+	if shell.paused(e.At) {
+		w.push(Event{At: shell.pausedUntil, Kind: EvClientReq, Node: e.Node, Client: e.Client, Attempt: e.Attempt, Cmd: e.Cmd})
+		return
+	}
+	respond := func(out *clientOutcome) {
+		delay := LogicalTime(1 + w.rng.Intn(w.cfg.MaxLatency))
+		w.push(Event{At: w.now + delay, Kind: EvClientResp, Client: e.Client, Attempt: e.Attempt, Out: out})
+	}
+	if shell.R.Status().Role != raft.Leader {
+		respond(&clientOutcome{notLeader: true, hint: shell.R.Status().LeaderHint})
+		return
+	}
+	out := w.stepNode(e, shell, raft.Propose{Data: e.Cmd})
+	if out.Proposed == nil {
+		respond(&clientOutcome{notLeader: true})
+		return
+	}
+	shell.Waiters.Register(out.Proposed.Index, out.Proposed.Term, func(o kv.Outcome) {
+		if o.LeadershipLost {
+			respond(&clientOutcome{lost: true})
+			return
+		}
+		respond(&clientOutcome{res: o.Result})
+	})
+}
+
+// clientOnResp advances the actor's retry state machine.
+func (w *World) clientOnResp(e Event) {
+	a := w.clients[e.Client]
+	if a.attempt != e.Attempt || a.pendingCmd == nil {
+		return // a stale attempt's answer; the current attempt supersedes it
+	}
+	out := e.Out
+	switch {
+	case out.notLeader:
+		a.hint = out.hint
+		w.push(Event{At: e.At + 1, Kind: EvClientStart, Client: e.Client})
+	case out.lost:
+		// Back to DISCOVER and resend the SAME Seq — the entire point of
+		// sessions. The proposal may in fact still have committed; dedup
+		// collapses the retry.
+		w.push(Event{At: e.At + 1, Kind: EvClientStart, Client: e.Client})
+	default:
+		if out.res.Err != kv.ErrNone {
+			// A well-behaved client (≤1 outstanding op, registered before
+			// writing) can never legally see these.
+			w.violation = &Violation{w.now, e.Seq, fmt.Sprintf(
+				"client protocol: actor %d got err=%d for seq %d", e.Client, out.res.Err, a.seq)}
+			return
+		}
+		a.sweeps = 0
+		a.complete(e.At, out.res)
+		w.tracef("t=%d #%d client %d done (%d/%d)", e.At, e.Seq, e.Client, a.opsDone, a.maxOps)
+		if !a.Done() {
+			w.push(Event{At: e.At + LogicalTime(1+a.rng.Intn(8)), Kind: EvClientStart, Client: e.Client})
+		}
 	}
 }
 
@@ -369,8 +499,17 @@ func (w *World) nemesisStrike(e Event) {
 // lives here: after persisting, every outbound message must be justified by
 // durable state, so processing sends first would trip it.
 func (w *World) stepNode(e Event, shell *NodeShell, in raft.Input) raft.Output {
+	wasLeader := shell.R.Status().Role == raft.Leader
 	out := shell.R.Step(in)
 	w.check.at(w.now, e.Seq)
+	defer func() {
+		// Step-down rule: the moment the core loses leadership, ALL
+		// outstanding waiters fail with ErrLeadershipLost — after the
+		// applies above completed their own waiters.
+		if wasLeader && shell.R.Status().Role != raft.Leader {
+			shell.Waiters.StepDown()
+		}
+	}()
 
 	if out.PersistHard != nil {
 		if err := shell.Store.Persist(out.PersistHard); err != nil {
@@ -405,6 +544,10 @@ func (w *World) stepNode(e Event, shell *NodeShell, in raft.Input) raft.Output {
 		w.tracef("t=%d #%d apply node=%d %+v", e.At, e.Seq, shell.ID, applied)
 		if w.violation == nil {
 			w.violation = w.check.observeApply(shell.ID, shell.R.Status().Term, applied)
+		}
+		res, isCmd := shell.KV.Apply(applied)
+		if isCmd {
+			shell.Waiters.Applied(applied.Index, applied.Term, res)
 		}
 	}
 
