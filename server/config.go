@@ -25,6 +25,10 @@ type Config struct {
 	ElectionTickMin int `toml:"election_tick_min"` // default 10
 	ElectionTickMax int `toml:"election_tick_max"` // default 20
 	HeartbeatTicks  int `toml:"heartbeat_ticks"`   // default 3
+
+	// SnapshotEntries triggers a state-machine snapshot + log compaction
+	// once lastApplied outruns the last snapshot by this many entries.
+	SnapshotEntries int `toml:"snapshot_entries"` // default 10000
 }
 
 // LoadConfig reads a TOML config file.
@@ -49,6 +53,9 @@ func (c *Config) Validate() error {
 	}
 	if c.TickMs == 0 {
 		c.TickMs = 10
+	}
+	if c.SnapshotEntries == 0 {
+		c.SnapshotEntries = 10000
 	}
 	return nil
 }

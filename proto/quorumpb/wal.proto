@@ -37,3 +37,11 @@ message EntriesRec {
 message TruncateRec {
   uint64 from_index = 1;
 }
+
+// SnapshotFile is the on-disk snapshot (snap-<index>-<term>.db), framed
+// [len:u32][crc32c:u32][payload] like WAL records.
+message SnapshotFile {
+  uint64 last_included_index = 1;
+  uint64 last_included_term  = 2;
+  bytes  kv                  = 3; // marshaled KVSnapshot
+}

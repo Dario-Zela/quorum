@@ -106,3 +106,29 @@ func (l *raftLog) TruncateFrom(i uint64) {
 	}
 	l.entries = l.entries[:i-l.first]
 }
+
+// CompactTo discards entries with index <= i, remembering (i, term) as the
+// snapshot boundary so Term(firstIndex-1) keeps answering. Entries above i
+// are retained — call it only when they are known good.
+func (l *raftLog) CompactTo(i, term uint64) {
+	if i < l.first-1 {
+		return // already compacted past here
+	}
+	if i > l.LastIndex() {
+		l.entries = nil
+	} else {
+		l.entries = append([]Entry(nil), l.entries[i+1-l.first:]...)
+	}
+	l.first = i + 1
+	l.snapIndex, l.snapTerm = i, term
+}
+
+// ResetToSnapshot discards the ENTIRE log and rebases it on (i, term) —
+// the InstallSnapshot case where the local log does not contain a matching
+// (i, term) entry: the whole thing is superseded. Getting this vs CompactTo
+// wrong silently truncates live entries (or resurrects dead ones).
+func (l *raftLog) ResetToSnapshot(i, term uint64) {
+	l.entries = nil
+	l.first = i + 1
+	l.snapIndex, l.snapTerm = i, term
+}

@@ -16,6 +16,12 @@ type record struct {
 	vote     raft.NodeID
 	truncate uint64
 	entries  []raft.Entry
+
+	// snapshot record (mutually exclusive with the above in practice)
+	snap     bool
+	snapIdx  uint64
+	snapTerm uint64
+	snapData []byte
 }
 
 // Store implements storage.Store in memory. It also keeps a materialized
@@ -53,6 +59,23 @@ func (s *Store) Persist(hs *raft.HardState) error {
 
 func (s *Store) Close() error { return nil }
 
+// SaveSnapshot durably records a snapshot: entries at and below index are
+// released (the real WAL deletes whole segments; the model just trims).
+func (s *Store) SaveSnapshot(index, term uint64, data []byte) error {
+	s.records = append(s.records, record{snap: true, snapIdx: index, snapTerm: term, snapData: data})
+	if index >= s.state.SnapIndex {
+		s.state.SnapIndex, s.state.SnapTerm, s.state.SnapData = index, term, data
+		keep := s.state.Entries[:0]
+		for _, e := range s.state.Entries {
+			if e.Index > index {
+				keep = append(keep, e)
+			}
+		}
+		s.state.Entries = keep
+	}
+	return nil
+}
+
 // State returns the current materialized state (live view for checkers).
 func (s *Store) State() storage.State { return s.state }
 
@@ -61,6 +84,19 @@ func (s *Store) State() storage.State { return s.state }
 func (s *Store) Reopen() (storage.State, error) {
 	var st storage.State
 	for i, r := range s.records {
+		if r.snap {
+			if r.snapIdx >= st.SnapIndex {
+				st.SnapIndex, st.SnapTerm, st.SnapData = r.snapIdx, r.snapTerm, r.snapData
+				keep := st.Entries[:0]
+				for _, e := range st.Entries {
+					if e.Index > r.snapIdx {
+						keep = append(keep, e)
+					}
+				}
+				st.Entries = keep
+			}
+			continue
+		}
 		st.Term, st.Vote = r.term, r.vote
 		if r.truncate > 0 {
 			keep := st.Entries[:0]
@@ -72,9 +108,12 @@ func (s *Store) Reopen() (storage.State, error) {
 			st.Entries = keep
 		}
 		for _, e := range r.entries {
-			next := uint64(1)
+			next := st.SnapIndex + 1
 			if n := len(st.Entries); n > 0 {
 				next = st.Entries[n-1].Index + 1
+			}
+			if e.Index <= st.SnapIndex {
+				continue // covered by a snapshot recorded later than the entry
 			}
 			if e.Index != next {
 				return storage.State{}, fmt.Errorf("memstore: replay gap at record %d: expected %d, got %d", i, next, e.Index)
@@ -82,7 +121,8 @@ func (s *Store) Reopen() (storage.State, error) {
 			st.Entries = append(st.Entries, e)
 		}
 	}
-	if st.Term != s.state.Term || st.Vote != s.state.Vote || len(st.Entries) != len(s.state.Entries) {
+	if st.Term != s.state.Term || st.Vote != s.state.Vote ||
+		st.SnapIndex != s.state.SnapIndex || len(st.Entries) != len(s.state.Entries) {
 		return storage.State{}, fmt.Errorf("memstore: replay diverged from materialized state: %+v vs %+v", st, s.state)
 	}
 	for i := range st.Entries {

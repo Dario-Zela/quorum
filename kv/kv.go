@@ -122,6 +122,56 @@ func (s *Store) Apply(e raft.Entry) (Result, bool) {
 	return res, true
 }
 
+// Snapshot serializes the store AND the session table. Marshaling is
+// deterministic (map ordering fixed): snapshot bytes ride in messages the
+// simulator byte-diffs across replays.
+func (s *Store) Snapshot() []byte {
+	snap := &quorumpb.KVSnapshot{
+		Data:     make(map[string]string, len(s.data)),
+		Sessions: make(map[uint64]*quorumpb.SessionRec, len(s.sessions)),
+	}
+	for k, v := range s.data {
+		snap.Data[k] = v
+	}
+	for id, sess := range s.sessions {
+		snap.Sessions[id] = &quorumpb.SessionRec{
+			LastSeq: sess.lastSeq,
+			Cached: &quorumpb.Result{
+				Value: sess.cached.Value, CasOk: sess.cached.CASOk,
+				ClientId: sess.cached.ClientID, Err: sess.cached.Err,
+			},
+		}
+	}
+	b, err := proto.MarshalOptions{Deterministic: true}.Marshal(snap)
+	if err != nil {
+		panic(fmt.Sprintf("kv: marshal snapshot: %v", err))
+	}
+	return b
+}
+
+// RestoreSnapshot replaces the store's entire state with the snapshot's.
+func (s *Store) RestoreSnapshot(b []byte) {
+	var snap quorumpb.KVSnapshot
+	if err := proto.Unmarshal(b, &snap); err != nil {
+		panic(fmt.Sprintf("kv: undecodable snapshot: %v", err))
+	}
+	s.data = make(map[string]string, len(snap.Data))
+	for k, v := range snap.Data {
+		s.data[k] = v
+	}
+	s.sessions = make(map[uint64]*session, len(snap.Sessions))
+	for id, rec := range snap.Sessions {
+		sess := &session{lastSeq: rec.LastSeq}
+		if rec.Cached != nil {
+			sess.cached = Result{
+				Value: rec.Cached.Value, CASOk: rec.Cached.CasOk,
+				ClientID: rec.Cached.ClientId, Err: rec.Cached.Err,
+			}
+		}
+		s.sessions[id] = sess
+	}
+}
+
 // SessionSeq reports a session's lastSeq (testing/observability).
 func (s *Store) SessionSeq(clientID uint64) (uint64, bool) {
 	sess, ok := s.sessions[clientID]

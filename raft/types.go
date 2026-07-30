@@ -90,10 +90,30 @@ type AppendEntriesReply struct {
 	Round         uint64 // echoed from the AppendEntries being answered
 }
 
-func (RequestVote) isMessage()        {}
-func (RequestVoteReply) isMessage()   {}
-func (AppendEntries) isMessage()      {}
-func (AppendEntriesReply) isMessage() {}
+// InstallSnapshot ships the leader's snapshot to a follower whose log has
+// been compacted away beneath its nextIndex. Single-shot in v1 (chunking:
+// FUTURE.md).
+type InstallSnapshot struct {
+	Term              uint64
+	LeaderID          NodeID
+	LastIncludedIndex uint64
+	LastIncludedTerm  uint64
+	Data              []byte
+}
+
+// InstallSnapshotReply acknowledges a snapshot; MatchIndex tells the leader
+// where to resume appends.
+type InstallSnapshotReply struct {
+	Term       uint64
+	MatchIndex uint64
+}
+
+func (RequestVote) isMessage()          {}
+func (RequestVoteReply) isMessage()     {}
+func (AppendEntries) isMessage()        {}
+func (AppendEntriesReply) isMessage()   {}
+func (InstallSnapshot) isMessage()      {}
+func (InstallSnapshotReply) isMessage() {}
 
 // Input is an event fed to the core via Step.
 type Input interface{ isInput() }
@@ -121,10 +141,21 @@ type ReadIndexReq struct {
 	Ctx uint64
 }
 
+// Compact tells the core the state machine has a durable-ready snapshot at
+// Index (which must be <= lastApplied): the core drops log entries at and
+// below it and keeps Data for InstallSnapshot to laggards. The caller is
+// responsible for persisting the snapshot via the resulting
+// Output.Snapshot before anything else leaves the node.
+type Compact struct {
+	Index uint64
+	Data  []byte
+}
+
 func (MsgRecv) isInput()      {}
 func (Tick) isInput()         {}
 func (Propose) isInput()      {}
 func (ReadIndexReq) isInput() {}
+func (Compact) isInput()      {}
 
 // AddressedMsg is a message the caller must transmit to To.
 type AddressedMsg struct {
@@ -170,9 +201,22 @@ type ReadState struct {
 //	3. ApplyEntries — feed committed entries to the state machine (may lag).
 //
 // The simulator asserts this ordering on every step.
+// SnapshotOp instructs the caller to durably store a snapshot — BEFORE
+// Send, like PersistHard (the reply acknowledging it references it). When
+// FromLeader is set the snapshot arrived via InstallSnapshot and the
+// caller must also restore its state machine from Data and reset its
+// applied position to Index.
+type SnapshotOp struct {
+	Index      uint64
+	Term       uint64
+	Data       []byte
+	FromLeader bool
+}
+
 type Output struct {
 	Send         []AddressedMsg
 	PersistHard  *HardState
+	Snapshot     *SnapshotOp
 	ApplyEntries []Entry
 	Proposed     *Receipt
 	ReadReady    []ReadState

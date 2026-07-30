@@ -47,6 +47,16 @@ func encode(from raft.NodeID, m raft.Message) *quorumpb.Envelope {
 			Term: v.Term, Success: v.Success, MatchIndex: v.MatchIndex,
 			ConflictIndex: v.ConflictIndex, ConflictTerm: v.ConflictTerm, Round: v.Round,
 		}}
+	case raft.InstallSnapshot:
+		env.Msg = &quorumpb.Envelope_InstallSnapshot{InstallSnapshot: &quorumpb.InstallSnapshotMsg{
+			Term: v.Term, LeaderId: uint64(v.LeaderID),
+			LastIncludedIndex: v.LastIncludedIndex, LastIncludedTerm: v.LastIncludedTerm,
+			Data: v.Data,
+		}}
+	case raft.InstallSnapshotReply:
+		env.Msg = &quorumpb.Envelope_InstallSnapshotReply{InstallSnapshotReply: &quorumpb.InstallSnapshotReplyMsg{
+			Term: v.Term, MatchIndex: v.MatchIndex,
+		}}
 	default:
 		panic(fmt.Sprintf("grpctransport: unmapped message %T", m))
 	}
@@ -77,6 +87,15 @@ func decode(env *quorumpb.Envelope) (raft.NodeID, raft.Message, error) {
 			Term: r.Term, Success: r.Success, MatchIndex: r.MatchIndex,
 			ConflictIndex: r.ConflictIndex, ConflictTerm: r.ConflictTerm, Round: r.Round,
 		}, nil
+	case *quorumpb.Envelope_InstallSnapshot:
+		is := v.InstallSnapshot
+		return from, raft.InstallSnapshot{
+			Term: is.Term, LeaderID: raft.NodeID(is.LeaderId),
+			LastIncludedIndex: is.LastIncludedIndex, LastIncludedTerm: is.LastIncludedTerm,
+			Data: is.Data,
+		}, nil
+	case *quorumpb.Envelope_InstallSnapshotReply:
+		return from, raft.InstallSnapshotReply{Term: v.InstallSnapshotReply.Term, MatchIndex: v.InstallSnapshotReply.MatchIndex}, nil
 	}
 	return 0, nil, fmt.Errorf("grpctransport: empty or unknown envelope from %d", env.From)
 }

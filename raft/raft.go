@@ -65,6 +65,12 @@ type Raft struct {
 	roundReads   []uint64
 	roundAcks    map[NodeID]bool
 
+	// Latest retained snapshot, for shipping to laggards whose nextIndex
+	// fell below our first retained entry.
+	snapIndex uint64
+	snapTerm  uint64
+	snapData  []byte
+
 	// Per-Step scratch for building Output.PersistHard.
 	hardDirty    bool
 	truncateFrom uint64
@@ -129,21 +135,36 @@ func New(cfg Config) *Raft {
 	return r
 }
 
-// Restore rebuilds a core from persisted state after a crash-restart: the
-// hard state (term, vote) and the durable log suffix, as recovered by the
-// storage layer. Volatile state — role, commitIndex, lastApplied — is
-// deliberately not restored: commitIndex is rediscovered through the first
-// AppendEntries exchange, and the state machine rebuilds by replay.
-func Restore(cfg Config, term uint64, votedFor NodeID, entries []Entry) *Raft {
+// RestoredState is what the storage layer recovered at startup. Entries
+// must be contiguous from SnapIndex+1.
+type RestoredState struct {
+	Term      uint64
+	VotedFor  NodeID
+	SnapIndex uint64
+	SnapTerm  uint64
+	SnapData  []byte
+	Entries   []Entry
+}
+
+// Restore rebuilds a core from persisted state after a crash-restart.
+// Volatile role state is deliberately not restored, and commitIndex
+// restarts at the snapshot boundary — everything above it is rediscovered
+// through the first AppendEntries exchange, and the state machine rebuilds
+// from the snapshot plus replayed applies.
+func Restore(cfg Config, s RestoredState) *Raft {
 	r := New(cfg)
-	r.term = term
-	r.votedFor = votedFor
-	for i, e := range entries {
-		if e.Index != uint64(i)+1 {
-			panic(fmt.Sprintf("raft: restored log not contiguous from 1: position %d holds index %d", i, e.Index))
+	r.term = s.Term
+	r.votedFor = s.VotedFor
+	for i, e := range s.Entries {
+		if e.Index != s.SnapIndex+uint64(i)+1 {
+			panic(fmt.Sprintf("raft: restored log not contiguous from %d: position %d holds index %d", s.SnapIndex+1, i, e.Index))
 		}
 	}
-	r.log.entries = append([]Entry(nil), entries...)
+	r.log.first = s.SnapIndex + 1
+	r.log.snapIndex, r.log.snapTerm = s.SnapIndex, s.SnapTerm
+	r.log.entries = append([]Entry(nil), s.Entries...)
+	r.snapIndex, r.snapTerm, r.snapData = s.SnapIndex, s.SnapTerm, s.SnapData
+	r.commitIndex, r.lastApplied = s.SnapIndex, s.SnapIndex
 	return r
 }
 
@@ -174,6 +195,8 @@ func (r *Raft) Step(in Input) Output {
 		r.propose(v.Data, &out)
 	case ReadIndexReq:
 		r.readIndex(v.Ctx, &out)
+	case Compact:
+		r.compact(v.Index, v.Data, &out)
 	default:
 		panic(fmt.Sprintf("raft: unknown input %T", in))
 	}
@@ -341,9 +364,20 @@ func (r *Raft) sendAppend(p NodeID, out *Output) {
 	next := r.nextIndex[p]
 	prevTerm, ok := r.log.Term(next - 1)
 	if !ok {
-		// nextIndex has fallen below our first retained entry — only
-		// possible after compaction. InstallSnapshot lands in weekend 6.
-		panic("raft: peer needs a snapshot; compaction lands in weekend 6")
+		// nextIndex fell below our first retained entry: ship the snapshot.
+		// Optimistically advance nextIndex so heartbeats don't re-send the
+		// whole snapshot every interval; if the follower didn't install it,
+		// its conflict replies walk us back here and we send it again.
+		if r.snapIndex == 0 {
+			panic("raft: peer below first entry but no snapshot retained")
+		}
+		out.Send = append(out.Send, AddressedMsg{To: p, Msg: InstallSnapshot{
+			Term: r.term, LeaderID: r.id,
+			LastIncludedIndex: r.snapIndex, LastIncludedTerm: r.snapTerm,
+			Data: r.snapData,
+		}})
+		r.nextIndex[p] = r.snapIndex + 1
+		return
 	}
 	out.Send = append(out.Send, AddressedMsg{To: p, Msg: AppendEntries{
 		Term:         r.term,
@@ -495,6 +529,10 @@ func msgTerm(m Message) uint64 {
 		return v.Term
 	case AppendEntriesReply:
 		return v.Term
+	case InstallSnapshot:
+		return v.Term
+	case InstallSnapshotReply:
+		return v.Term
 	}
 	panic(fmt.Sprintf("raft: unknown message %T", m))
 }
@@ -506,8 +544,11 @@ func (r *Raft) recv(from NodeID, m Message, out *Output) {
 	// adoption is durable before anything referencing it leaves the node.
 	if t := msgTerm(m); t > r.term {
 		leader := None
-		if ae, ok := m.(AppendEntries); ok {
-			leader = ae.LeaderID
+		switch v := m.(type) {
+		case AppendEntries:
+			leader = v.LeaderID
+		case InstallSnapshot:
+			leader = v.LeaderID
 		}
 		r.becomeFollower(t, leader)
 	}
@@ -521,7 +562,79 @@ func (r *Raft) recv(from NodeID, m Message, out *Output) {
 		r.handleAppendEntries(from, v, out)
 	case AppendEntriesReply:
 		r.handleAppendEntriesReply(from, v, out)
+	case InstallSnapshot:
+		r.handleInstallSnapshot(from, v, out)
+	case InstallSnapshotReply:
+		r.handleInstallSnapshotReply(from, v)
 	}
+}
+
+// handleInstallSnapshot implements the §4.1 edge cases: a stale snapshot
+// (LastIncludedIndex <= commitIndex) is ignored — it can arrive late
+// through a reordering network; a matching (index, term) entry in our log
+// means the suffix after it survives; otherwise the whole log is discarded.
+func (r *Raft) handleInstallSnapshot(from NodeID, m InstallSnapshot, out *Output) {
+	if m.Term < r.term {
+		out.Send = append(out.Send, AddressedMsg{To: from, Msg: InstallSnapshotReply{Term: r.term}})
+		return
+	}
+	if r.role != Follower {
+		r.becomeFollower(m.Term, m.LeaderID)
+	}
+	r.leaderHint = m.LeaderID
+	r.resetElectionTimer() // valid InstallSnapshot from the current-term leader
+
+	if m.LastIncludedIndex <= r.commitIndex {
+		// Stale: everything it contains is already committed here. Tell the
+		// leader where we actually are so it resumes appends.
+		out.Send = append(out.Send, AddressedMsg{To: from, Msg: InstallSnapshotReply{
+			Term: r.term, MatchIndex: r.commitIndex,
+		}})
+		return
+	}
+	if t, ok := r.log.Term(m.LastIncludedIndex); ok && t == m.LastIncludedTerm {
+		r.log.CompactTo(m.LastIncludedIndex, m.LastIncludedTerm) // retain the suffix
+	} else {
+		r.log.ResetToSnapshot(m.LastIncludedIndex, m.LastIncludedTerm)
+		// The WAL may hold entries above the snapshot that we just
+		// disowned; log the truncation so recovery cannot resurrect them.
+		r.truncateFrom = m.LastIncludedIndex + 1
+	}
+	r.snapIndex, r.snapTerm, r.snapData = m.LastIncludedIndex, m.LastIncludedTerm, m.Data
+	r.commitIndex = m.LastIncludedIndex
+	r.lastApplied = m.LastIncludedIndex
+	out.Snapshot = &SnapshotOp{Index: m.LastIncludedIndex, Term: m.LastIncludedTerm, Data: m.Data, FromLeader: true}
+	out.Send = append(out.Send, AddressedMsg{To: from, Msg: InstallSnapshotReply{
+		Term: r.term, MatchIndex: m.LastIncludedIndex,
+	}})
+}
+
+func (r *Raft) handleInstallSnapshotReply(from NodeID, m InstallSnapshotReply) {
+	if r.role != Leader || m.Term < r.term {
+		return
+	}
+	if m.MatchIndex > r.matchIndex[from] {
+		r.matchIndex[from] = m.MatchIndex
+		r.nextIndex[from] = m.MatchIndex + 1
+	}
+}
+
+// compact handles the state machine's own snapshot: drop covered entries,
+// keep the snapshot for laggards.
+func (r *Raft) compact(index uint64, data []byte, out *Output) {
+	if index <= r.log.first-1 {
+		return // already compacted past here
+	}
+	if index > r.lastApplied {
+		panic(fmt.Sprintf("raft: compacting at %d beyond lastApplied %d", index, r.lastApplied))
+	}
+	t, ok := r.log.Term(index)
+	if !ok {
+		panic("raft: compaction point missing from log")
+	}
+	r.snapIndex, r.snapTerm, r.snapData = index, t, data
+	r.log.CompactTo(index, t)
+	out.Snapshot = &SnapshotOp{Index: index, Term: t, Data: data}
 }
 
 func (r *Raft) handleRequestVote(from NodeID, m RequestVote, out *Output) {

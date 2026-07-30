@@ -37,3 +37,17 @@ message Result {
   uint64 client_id = 3; // OP_REGISTER: the assigned id
   uint32 err       = 4; // kv.Err* codes
 }
+
+// SessionRec is one session's dedup state.
+message SessionRec {
+  uint64 last_seq = 1;
+  Result cached   = 2;
+}
+
+// KVSnapshot is the serialized state machine: the store AND the session
+// table — sessions are replicated state; restore one without the other and
+// dedup silently breaks.
+message KVSnapshot {
+  map<string, string>     data     = 1;
+  map<uint64, SessionRec> sessions = 2;
+}

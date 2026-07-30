@@ -327,6 +327,68 @@ func (x *TruncateRec) GetFromIndex() uint64 {
 	return 0
 }
 
+// SnapshotFile is the on-disk snapshot (snap-<index>-<term>.db), framed
+// [len:u32][crc32c:u32][payload] like WAL records.
+type SnapshotFile struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	LastIncludedIndex uint64                 `protobuf:"varint,1,opt,name=last_included_index,json=lastIncludedIndex,proto3" json:"last_included_index,omitempty"`
+	LastIncludedTerm  uint64                 `protobuf:"varint,2,opt,name=last_included_term,json=lastIncludedTerm,proto3" json:"last_included_term,omitempty"`
+	Kv                []byte                 `protobuf:"bytes,3,opt,name=kv,proto3" json:"kv,omitempty"` // marshaled KVSnapshot
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *SnapshotFile) Reset() {
+	*x = SnapshotFile{}
+	mi := &file_proto_quorumpb_wal_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SnapshotFile) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SnapshotFile) ProtoMessage() {}
+
+func (x *SnapshotFile) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_quorumpb_wal_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SnapshotFile.ProtoReflect.Descriptor instead.
+func (*SnapshotFile) Descriptor() ([]byte, []int) {
+	return file_proto_quorumpb_wal_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *SnapshotFile) GetLastIncludedIndex() uint64 {
+	if x != nil {
+		return x.LastIncludedIndex
+	}
+	return 0
+}
+
+func (x *SnapshotFile) GetLastIncludedTerm() uint64 {
+	if x != nil {
+		return x.LastIncludedTerm
+	}
+	return 0
+}
+
+func (x *SnapshotFile) GetKv() []byte {
+	if x != nil {
+		return x.Kv
+	}
+	return nil
+}
+
 var File_proto_quorumpb_wal_proto protoreflect.FileDescriptor
 
 const file_proto_quorumpb_wal_proto_rawDesc = "" +
@@ -350,7 +412,11 @@ const file_proto_quorumpb_wal_proto_rawDesc = "" +
 	"\aentries\x18\x01 \x03(\v2\x0f.quorumpb.EntryR\aentries\",\n" +
 	"\vTruncateRec\x12\x1d\n" +
 	"\n" +
-	"from_index\x18\x01 \x01(\x04R\tfromIndexB-Z+github.com/Dario-Zela/quorum/proto/quorumpbb\x06proto3"
+	"from_index\x18\x01 \x01(\x04R\tfromIndex\"|\n" +
+	"\fSnapshotFile\x12.\n" +
+	"\x13last_included_index\x18\x01 \x01(\x04R\x11lastIncludedIndex\x12,\n" +
+	"\x12last_included_term\x18\x02 \x01(\x04R\x10lastIncludedTerm\x12\x0e\n" +
+	"\x02kv\x18\x03 \x01(\fR\x02kvB-Z+github.com/Dario-Zela/quorum/proto/quorumpbb\x06proto3"
 
 var (
 	file_proto_quorumpb_wal_proto_rawDescOnce sync.Once
@@ -364,13 +430,14 @@ func file_proto_quorumpb_wal_proto_rawDescGZIP() []byte {
 	return file_proto_quorumpb_wal_proto_rawDescData
 }
 
-var file_proto_quorumpb_wal_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_proto_quorumpb_wal_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_proto_quorumpb_wal_proto_goTypes = []any{
 	(*Entry)(nil),        // 0: quorumpb.Entry
 	(*WalRecord)(nil),    // 1: quorumpb.WalRecord
 	(*HardStateRec)(nil), // 2: quorumpb.HardStateRec
 	(*EntriesRec)(nil),   // 3: quorumpb.EntriesRec
 	(*TruncateRec)(nil),  // 4: quorumpb.TruncateRec
+	(*SnapshotFile)(nil), // 5: quorumpb.SnapshotFile
 }
 var file_proto_quorumpb_wal_proto_depIdxs = []int32{
 	2, // 0: quorumpb.WalRecord.hard_state:type_name -> quorumpb.HardStateRec
@@ -400,7 +467,7 @@ func file_proto_quorumpb_wal_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_quorumpb_wal_proto_rawDesc), len(file_proto_quorumpb_wal_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   5,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -125,24 +125,50 @@ func entriesEqual(a, b raft.Entry) bool {
 // entryAt fetches index i from a shell's durable log (contiguous from 1
 // until compaction lands).
 func entryAt(s *NodeShell, i uint64) (raft.Entry, bool) {
-	log := s.Log()
-	if i < 1 || i > uint64(len(log)) {
+	st := s.Store.State()
+	if i <= st.SnapIndex {
+		return raft.Entry{}, false // compacted away
+	}
+	pos := i - st.SnapIndex - 1
+	if pos >= uint64(len(st.Entries)) {
 		return raft.Entry{}, false
 	}
-	e := log[i-1]
+	e := st.Entries[pos]
 	if e.Index != i {
-		panic(fmt.Sprintf("sim: durable log of node %d not contiguous: position %d holds index %d", s.ID, i, e.Index))
+		panic(fmt.Sprintf("sim: durable log of node %d not contiguous: position %d holds index %d", s.ID, pos, e.Index))
 	}
 	return e, true
+}
+
+// lastDurableIndex is the durable tail (snapshot boundary if log empty).
+func lastDurableIndex(s *NodeShell) uint64 {
+	st := s.Store.State()
+	if n := len(st.Entries); n > 0 {
+		return st.Entries[n-1].Index
+	}
+	return st.SnapIndex
 }
 
 // observeRestart resets per-node volatile expectations after a
 // crash-restart: the state machine rebuilds by replay, so applies begin
 // again from index 1 (State-Machine Safety still holds them to the same
 // committed entries), and the commit watermark is rediscovered.
-func (c *checker) observeRestart(node raft.NodeID) {
-	c.appliedUpTo[node] = 0
-	c.lastCommit[node] = 0
+func (c *checker) observeRestart(node raft.NodeID, snapIndex uint64) {
+	c.appliedUpTo[node] = snapIndex
+	c.lastCommit[node] = snapIndex
+}
+
+// observeSnapshotInstall records a follower jumping its applied state to a
+// leader's snapshot. The skipped entries' contents were verified when the
+// SENDER (and every other node) applied them; State-Machine Safety resumes
+// from the boundary.
+func (c *checker) observeSnapshotInstall(node raft.NodeID, index uint64) {
+	if c.appliedUpTo[node] < index {
+		c.appliedUpTo[node] = index
+	}
+	if c.lastCommit[node] < index {
+		c.lastCommit[node] = index
+	}
 }
 
 // observeTruncate must be called whenever node's durable log was truncated
@@ -185,7 +211,10 @@ func (c *checker) observeStatus(s *NodeShell, st raft.Status) *Violation {
 		for i := c.lastCommit[st.ID] + 1; i <= st.CommitIndex; i++ {
 			e, ok := entryAt(s, i)
 			if !ok {
-				return c.fail("node %d committed index %d beyond its durable log (len %d)", st.ID, i, len(s.Log()))
+				if i <= s.Store.State().SnapIndex {
+					continue // compacted: verified before compaction
+				}
+				return c.fail("node %d committed index %d beyond its durable tail %d", st.ID, i, lastDurableIndex(s))
 			}
 			if v := c.record(st.ID, e, st.Term, "committed"); v != nil {
 				return v
@@ -213,7 +242,14 @@ func (c *checker) observeStatus(s *NodeShell, st raft.Status) *Violation {
 					continue
 				}
 				got, ok := entryAt(s, i)
-				if !ok || !entriesEqual(want.e, got) {
+				if !ok {
+					if i <= s.Store.State().SnapIndex {
+						continue // committed-then-compacted: it held them
+					}
+					return c.fail("leader completeness: node %d elected leader of term %d without entry %+v committed in term %d (log too short)",
+						st.ID, st.Term, want.e, want.commitTerm)
+				}
+				if !entriesEqual(want.e, got) {
 					return c.fail("leader completeness: node %d elected leader of term %d without entry %+v committed in term %d (has %+v)",
 						st.ID, st.Term, want.e, want.commitTerm, got)
 				}
@@ -234,16 +270,23 @@ func (c *checker) observeLogPair(a, b *NodeShell) *Violation {
 	if key[0] > key[1] {
 		key[0], key[1] = key[1], key[0]
 	}
-	la, lb := uint64(len(a.Log())), uint64(len(b.Log()))
-	limit := min(la, lb)
-	watermark := c.matchedUpTo[key]
+	limit := min(lastDurableIndex(a), lastDurableIndex(b))
+	// Below either snapshot boundary the entries are gone; the floor is the
+	// highest of (verified watermark, both snapshot boundaries).
+	floor := c.matchedUpTo[key]
+	if sa := a.Store.State().SnapIndex; sa > floor {
+		floor = sa
+	}
+	if sb := b.Store.State().SnapIndex; sb > floor {
+		floor = sb
+	}
 
 	// Highest index where the two logs claim the same term.
 	agree := uint64(0)
-	for i := limit; i > watermark; i-- {
-		ea, _ := entryAt(a, i)
-		eb, _ := entryAt(b, i)
-		if ea.Term == eb.Term {
+	for i := limit; i > floor; i-- {
+		ea, okA := entryAt(a, i)
+		eb, okB := entryAt(b, i)
+		if okA && okB && ea.Term == eb.Term {
 			agree = i
 			break
 		}
@@ -252,7 +295,7 @@ func (c *checker) observeLogPair(a, b *NodeShell) *Violation {
 		return nil
 	}
 	// Same (index, term) ⇒ identical entries and identical prefixes.
-	for i := watermark + 1; i <= agree; i++ {
+	for i := floor + 1; i <= agree; i++ {
 		ea, _ := entryAt(a, i)
 		eb, _ := entryAt(b, i)
 		if !entriesEqual(ea, eb) {
@@ -260,6 +303,8 @@ func (c *checker) observeLogPair(a, b *NodeShell) *Violation {
 				a.ID, b.ID, agree, i, ea, eb)
 		}
 	}
-	c.matchedUpTo[key] = agree
+	if agree > c.matchedUpTo[key] {
+		c.matchedUpTo[key] = agree
+	}
 	return nil
 }

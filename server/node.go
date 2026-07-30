@@ -40,10 +40,12 @@ type Node struct {
 	kvStore *kv.Store
 	waiters *lockedWaiters
 
-	doCh    chan doReq
-	applyCh chan applyItem
-	stop    chan struct{}
-	done    sync.WaitGroup
+	doCh      chan doReq
+	applyCh   chan applyItem
+	compactCh chan compactReq
+	stop      chan struct{}
+	done      sync.WaitGroup
+	snapBase  atomic.Uint64
 
 	status      atomic.Pointer[raft.Status]
 	lastApplied atomic.Uint64
@@ -63,6 +65,11 @@ type doReq struct {
 	resp chan *quorumpb.DoReply
 }
 
+type compactReq struct {
+	index uint64
+	data  []byte
+}
+
 // applyItem sequences work through the apply loop: entry batches, read
 // serves (queued AFTER the entries covering their read index, so ordering
 // guarantees lastApplied ≥ index by serve time), and step-down markers
@@ -72,6 +79,7 @@ type applyItem struct {
 	entries  []raft.Entry
 	read     *readServe
 	stepDown bool
+	restore  *raft.SnapshotOp // InstallSnapshot: rebuild the state machine
 }
 
 type readServe struct {
@@ -125,8 +133,12 @@ func Run(cfg Config, logger *slog.Logger) (*Node, error) {
 		ElectionTickMin: cfg.ElectionTickMin,
 		ElectionTickMax: cfg.ElectionTickMax,
 		HeartbeatTicks:  cfg.HeartbeatTicks,
-	}, st.Term, st.Vote, st.Entries)
-	logger.Info("recovered", "term", st.Term, "vote", st.Vote, "log_entries", len(st.Entries))
+	}, raft.RestoredState{
+		Term: st.Term, VotedFor: st.Vote,
+		SnapIndex: st.SnapIndex, SnapTerm: st.SnapTerm, SnapData: st.SnapData,
+		Entries: st.Entries,
+	})
+	logger.Info("recovered", "term", st.Term, "vote", st.Vote, "snap_index", st.SnapIndex, "log_entries", len(st.Entries))
 
 	tr := grpctransport.New(raft.NodeID(cfg.ID), cfg.PeerAddrs(), logger)
 
@@ -140,9 +152,15 @@ func Run(cfg Config, logger *slog.Logger) (*Node, error) {
 		waiters:     &lockedWaiters{w: kv.NewWaiters()},
 		doCh:        make(chan doReq, 256),
 		applyCh:     make(chan applyItem, 1024),
+		compactCh:   make(chan compactReq, 1),
 		stop:        make(chan struct{}),
 		pendingRead: make(map[uint64]doReq),
 		metrics:     newMetrics(cfg.ID),
+	}
+	if st.SnapData != nil {
+		n.kvStore.RestoreSnapshot(st.SnapData)
+		n.lastApplied.Store(st.SnapIndex)
+		n.snapBase.Store(st.SnapIndex)
 	}
 	stat := core.Status()
 	n.status.Store(&stat)
@@ -209,6 +227,8 @@ func (n *Node) nodeLoop() {
 			out = n.core.Step(mr)
 		case req := <-n.doCh:
 			out = n.handleDo(req)
+		case cr := <-n.compactCh:
+			out = n.core.Step(raft.Compact{Index: cr.index, Data: cr.data})
 		}
 		n.process(out)
 	}
@@ -258,6 +278,19 @@ func (n *Node) process(out raft.Output) {
 			panic(fmt.Sprintf("wal persist failed: %v", err))
 		}
 	}
+	if op := out.Snapshot; op != nil {
+		// Durable before Send, like PersistHard: the reply acknowledging an
+		// installed snapshot references it.
+		if err := n.wal.SaveSnapshot(op.Index, op.Term, op.Data); err != nil {
+			n.log.Error("snapshot persist failed; halting", "err", err)
+			panic(fmt.Sprintf("snapshot persist failed: %v", err))
+		}
+		n.snapBase.Store(op.Index)
+		if op.FromLeader {
+			n.applyCh <- applyItem{restore: op}
+		}
+		n.log.Info("snapshot", "index", op.Index, "term", op.Term, "from_leader", op.FromLeader)
+	}
 	for _, send := range out.Send {
 		n.tr.Send(send.To, send.Msg)
 	}
@@ -303,6 +336,12 @@ func (n *Node) applyLoop() {
 		switch {
 		case item.stepDown:
 			n.waiters.StepDown()
+		case item.restore != nil:
+			n.kvMu.Lock()
+			n.kvStore.RestoreSnapshot(item.restore.Data)
+			n.kvMu.Unlock()
+			n.lastApplied.Store(item.restore.Index)
+			n.metrics.applied.Set(float64(item.restore.Index))
 		case item.read != nil:
 			if got := n.lastApplied.Load(); got < item.read.index {
 				// Impossible by queue ordering; a violation here is a bug.
@@ -322,6 +361,18 @@ func (n *Node) applyLoop() {
 				}
 				n.lastApplied.Store(e.Index)
 				n.metrics.applied.Set(float64(e.Index))
+			}
+			// Compaction trigger: snapshot the state machine once the log
+			// outruns the last snapshot far enough. Non-blocking: skipping
+			// a trigger is fine, the next batch re-fires it.
+			if la := n.lastApplied.Load(); la >= n.snapBase.Load()+uint64(n.cfg.SnapshotEntries) {
+				n.kvMu.Lock()
+				data := n.kvStore.Snapshot()
+				n.kvMu.Unlock()
+				select {
+				case n.compactCh <- compactReq{index: la, data: data}:
+				default:
+				}
 			}
 		}
 	}

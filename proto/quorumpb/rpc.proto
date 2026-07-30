@@ -19,7 +19,22 @@ message Envelope {
     RequestVoteReplyMsg  request_vote_reply  = 3;
     AppendEntriesMsg     append_entries      = 4;
     AppendEntriesReplyMsg append_entries_reply = 5;
+    InstallSnapshotMsg   install_snapshot    = 6;
+    InstallSnapshotReplyMsg install_snapshot_reply = 7;
   }
+}
+
+message InstallSnapshotMsg {
+  uint64 term                = 1;
+  uint64 leader_id           = 2;
+  uint64 last_included_index = 3;
+  uint64 last_included_term  = 4;
+  bytes  data                = 5;
+}
+
+message InstallSnapshotReplyMsg {
+  uint64 term        = 1;
+  uint64 match_index = 2;
 }
 
 message RequestVoteMsg {

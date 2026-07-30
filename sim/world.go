@@ -41,6 +41,11 @@ type Config struct {
 	// feed the linearizability checker.
 	Clients   int
 	ClientOps int
+
+	// SnapshotEvery, when >0, compacts a node's log via a state-machine
+	// snapshot once lastApplied outruns the last snapshot by this many
+	// entries (checked on ticks, so it stays deterministic).
+	SnapshotEvery int
 }
 
 // NodeShell wraps one raft core with its durable storage: what survives a
@@ -223,8 +228,15 @@ func (w *World) Restart(id raft.NodeID) {
 		ID:    id,
 		Peers: w.IDs(),
 		Rand:  rand.New(rand.NewSource(w.cfg.Seed<<8 | int64(id) + int64(shell.restarts)*100_003)),
-	}, st.Term, st.Vote, append([]raft.Entry(nil), st.Entries...))
-	w.check.observeRestart(id)
+	}, raft.RestoredState{
+		Term: st.Term, VotedFor: st.Vote,
+		SnapIndex: st.SnapIndex, SnapTerm: st.SnapTerm, SnapData: st.SnapData,
+		Entries: append([]raft.Entry(nil), st.Entries...),
+	})
+	if st.SnapData != nil {
+		shell.KV.RestoreSnapshot(st.SnapData)
+	}
+	w.check.observeRestart(id, st.SnapIndex)
 	w.tracef("t=%d restart node=%d term=%d vote=%d log=%d", w.now, id, st.Term, st.Vote, len(st.Entries))
 	w.push(Event{At: w.now + 1, Kind: EvTick, Node: id})
 }
@@ -303,6 +315,11 @@ func (w *World) stepOnce() {
 	case EvTick:
 		if shell.down {
 			return // ticks die with the node; Restart schedules a new one
+		}
+		if w.cfg.SnapshotEvery > 0 && !shell.paused(e.At) {
+			if st := shell.R.Status(); st.LastApplied >= shell.Store.State().SnapIndex+uint64(w.cfg.SnapshotEvery) {
+				w.stepNode(e, shell, raft.Compact{Index: st.LastApplied, Data: shell.KV.Snapshot()})
+			}
 		}
 		if shell.paused(e.At) {
 			// A paused node's clock is frozen: the tick chain continues but
@@ -543,6 +560,20 @@ func (w *World) stepNode(e Event, shell *NodeShell, in raft.Input) raft.Output {
 			e.At, e.Seq, shell.ID, out.PersistHard.Term, out.PersistHard.VotedFor,
 			out.PersistHard.TruncateFrom, len(out.PersistHard.Append))
 	}
+	if op := out.Snapshot; op != nil {
+		// Like PersistHard, snapshots are durable BEFORE sends: the reply
+		// acknowledging an install references it.
+		if err := shell.Store.SaveSnapshot(op.Index, op.Term, op.Data); err != nil {
+			w.violation = &Violation{w.now, e.Seq, fmt.Sprintf("storage snapshot: %v", err)}
+			return out
+		}
+		if op.FromLeader {
+			shell.KV.RestoreSnapshot(op.Data)
+			w.check.observeSnapshotInstall(shell.ID, op.Index)
+		}
+		w.tracef("t=%d #%d snapshot node=%d idx=%d term=%d from_leader=%v",
+			e.At, e.Seq, shell.ID, op.Index, op.Term, op.FromLeader)
+	}
 
 	for _, send := range out.Send {
 		if v := w.assertSendDurable(e, shell, send); v != nil {
@@ -632,15 +663,23 @@ func (w *World) assertSendDurable(e Event, shell *NodeShell, send raft.Addressed
 	case raft.AppendEntries:
 		term = m.Term
 		// Every entry leaving the node must already be durable.
-		durable := shell.Log()
 		for _, sent := range m.Entries {
-			if sent.Index > uint64(len(durable)) || durable[sent.Index-1].Term != sent.Term {
+			if e2, ok := entryAt(shell, sent.Index); !ok || e2.Term != sent.Term {
 				return &Violation{w.now, e.Seq, fmt.Sprintf(
 					"persist-before-send: node %d sends entry %d/%d that its durable log doesn't hold",
 					shell.ID, sent.Index, sent.Term)}
 			}
 		}
 	case raft.AppendEntriesReply:
+		term = m.Term
+	case raft.InstallSnapshot:
+		term = m.Term
+		if st := shell.Store.State(); st.SnapIndex < m.LastIncludedIndex {
+			return &Violation{w.now, e.Seq, fmt.Sprintf(
+				"persist-before-send: node %d ships snapshot %d but its durable snapshot is %d",
+				shell.ID, m.LastIncludedIndex, st.SnapIndex)}
+		}
+	case raft.InstallSnapshotReply:
 		term = m.Term
 	}
 	if term > shell.Term() {

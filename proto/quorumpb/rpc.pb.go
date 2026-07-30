@@ -88,6 +88,8 @@ type Envelope struct {
 	//	*Envelope_RequestVoteReply
 	//	*Envelope_AppendEntries
 	//	*Envelope_AppendEntriesReply
+	//	*Envelope_InstallSnapshot
+	//	*Envelope_InstallSnapshotReply
 	Msg           isEnvelope_Msg `protobuf_oneof:"msg"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -173,6 +175,24 @@ func (x *Envelope) GetAppendEntriesReply() *AppendEntriesReplyMsg {
 	return nil
 }
 
+func (x *Envelope) GetInstallSnapshot() *InstallSnapshotMsg {
+	if x != nil {
+		if x, ok := x.Msg.(*Envelope_InstallSnapshot); ok {
+			return x.InstallSnapshot
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetInstallSnapshotReply() *InstallSnapshotReplyMsg {
+	if x != nil {
+		if x, ok := x.Msg.(*Envelope_InstallSnapshotReply); ok {
+			return x.InstallSnapshotReply
+		}
+	}
+	return nil
+}
+
 type isEnvelope_Msg interface {
 	isEnvelope_Msg()
 }
@@ -193,6 +213,14 @@ type Envelope_AppendEntriesReply struct {
 	AppendEntriesReply *AppendEntriesReplyMsg `protobuf:"bytes,5,opt,name=append_entries_reply,json=appendEntriesReply,proto3,oneof"`
 }
 
+type Envelope_InstallSnapshot struct {
+	InstallSnapshot *InstallSnapshotMsg `protobuf:"bytes,6,opt,name=install_snapshot,json=installSnapshot,proto3,oneof"`
+}
+
+type Envelope_InstallSnapshotReply struct {
+	InstallSnapshotReply *InstallSnapshotReplyMsg `protobuf:"bytes,7,opt,name=install_snapshot_reply,json=installSnapshotReply,proto3,oneof"`
+}
+
 func (*Envelope_RequestVote) isEnvelope_Msg() {}
 
 func (*Envelope_RequestVoteReply) isEnvelope_Msg() {}
@@ -200,6 +228,138 @@ func (*Envelope_RequestVoteReply) isEnvelope_Msg() {}
 func (*Envelope_AppendEntries) isEnvelope_Msg() {}
 
 func (*Envelope_AppendEntriesReply) isEnvelope_Msg() {}
+
+func (*Envelope_InstallSnapshot) isEnvelope_Msg() {}
+
+func (*Envelope_InstallSnapshotReply) isEnvelope_Msg() {}
+
+type InstallSnapshotMsg struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	Term              uint64                 `protobuf:"varint,1,opt,name=term,proto3" json:"term,omitempty"`
+	LeaderId          uint64                 `protobuf:"varint,2,opt,name=leader_id,json=leaderId,proto3" json:"leader_id,omitempty"`
+	LastIncludedIndex uint64                 `protobuf:"varint,3,opt,name=last_included_index,json=lastIncludedIndex,proto3" json:"last_included_index,omitempty"`
+	LastIncludedTerm  uint64                 `protobuf:"varint,4,opt,name=last_included_term,json=lastIncludedTerm,proto3" json:"last_included_term,omitempty"`
+	Data              []byte                 `protobuf:"bytes,5,opt,name=data,proto3" json:"data,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *InstallSnapshotMsg) Reset() {
+	*x = InstallSnapshotMsg{}
+	mi := &file_proto_quorumpb_rpc_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InstallSnapshotMsg) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InstallSnapshotMsg) ProtoMessage() {}
+
+func (x *InstallSnapshotMsg) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_quorumpb_rpc_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InstallSnapshotMsg.ProtoReflect.Descriptor instead.
+func (*InstallSnapshotMsg) Descriptor() ([]byte, []int) {
+	return file_proto_quorumpb_rpc_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *InstallSnapshotMsg) GetTerm() uint64 {
+	if x != nil {
+		return x.Term
+	}
+	return 0
+}
+
+func (x *InstallSnapshotMsg) GetLeaderId() uint64 {
+	if x != nil {
+		return x.LeaderId
+	}
+	return 0
+}
+
+func (x *InstallSnapshotMsg) GetLastIncludedIndex() uint64 {
+	if x != nil {
+		return x.LastIncludedIndex
+	}
+	return 0
+}
+
+func (x *InstallSnapshotMsg) GetLastIncludedTerm() uint64 {
+	if x != nil {
+		return x.LastIncludedTerm
+	}
+	return 0
+}
+
+func (x *InstallSnapshotMsg) GetData() []byte {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
+type InstallSnapshotReplyMsg struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Term          uint64                 `protobuf:"varint,1,opt,name=term,proto3" json:"term,omitempty"`
+	MatchIndex    uint64                 `protobuf:"varint,2,opt,name=match_index,json=matchIndex,proto3" json:"match_index,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *InstallSnapshotReplyMsg) Reset() {
+	*x = InstallSnapshotReplyMsg{}
+	mi := &file_proto_quorumpb_rpc_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InstallSnapshotReplyMsg) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InstallSnapshotReplyMsg) ProtoMessage() {}
+
+func (x *InstallSnapshotReplyMsg) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_quorumpb_rpc_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InstallSnapshotReplyMsg.ProtoReflect.Descriptor instead.
+func (*InstallSnapshotReplyMsg) Descriptor() ([]byte, []int) {
+	return file_proto_quorumpb_rpc_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *InstallSnapshotReplyMsg) GetTerm() uint64 {
+	if x != nil {
+		return x.Term
+	}
+	return 0
+}
+
+func (x *InstallSnapshotReplyMsg) GetMatchIndex() uint64 {
+	if x != nil {
+		return x.MatchIndex
+	}
+	return 0
+}
 
 type RequestVoteMsg struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -213,7 +373,7 @@ type RequestVoteMsg struct {
 
 func (x *RequestVoteMsg) Reset() {
 	*x = RequestVoteMsg{}
-	mi := &file_proto_quorumpb_rpc_proto_msgTypes[1]
+	mi := &file_proto_quorumpb_rpc_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -225,7 +385,7 @@ func (x *RequestVoteMsg) String() string {
 func (*RequestVoteMsg) ProtoMessage() {}
 
 func (x *RequestVoteMsg) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_quorumpb_rpc_proto_msgTypes[1]
+	mi := &file_proto_quorumpb_rpc_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -238,7 +398,7 @@ func (x *RequestVoteMsg) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RequestVoteMsg.ProtoReflect.Descriptor instead.
 func (*RequestVoteMsg) Descriptor() ([]byte, []int) {
-	return file_proto_quorumpb_rpc_proto_rawDescGZIP(), []int{1}
+	return file_proto_quorumpb_rpc_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *RequestVoteMsg) GetTerm() uint64 {
@@ -279,7 +439,7 @@ type RequestVoteReplyMsg struct {
 
 func (x *RequestVoteReplyMsg) Reset() {
 	*x = RequestVoteReplyMsg{}
-	mi := &file_proto_quorumpb_rpc_proto_msgTypes[2]
+	mi := &file_proto_quorumpb_rpc_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -291,7 +451,7 @@ func (x *RequestVoteReplyMsg) String() string {
 func (*RequestVoteReplyMsg) ProtoMessage() {}
 
 func (x *RequestVoteReplyMsg) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_quorumpb_rpc_proto_msgTypes[2]
+	mi := &file_proto_quorumpb_rpc_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -304,7 +464,7 @@ func (x *RequestVoteReplyMsg) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RequestVoteReplyMsg.ProtoReflect.Descriptor instead.
 func (*RequestVoteReplyMsg) Descriptor() ([]byte, []int) {
-	return file_proto_quorumpb_rpc_proto_rawDescGZIP(), []int{2}
+	return file_proto_quorumpb_rpc_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *RequestVoteReplyMsg) GetTerm() uint64 {
@@ -336,7 +496,7 @@ type AppendEntriesMsg struct {
 
 func (x *AppendEntriesMsg) Reset() {
 	*x = AppendEntriesMsg{}
-	mi := &file_proto_quorumpb_rpc_proto_msgTypes[3]
+	mi := &file_proto_quorumpb_rpc_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -348,7 +508,7 @@ func (x *AppendEntriesMsg) String() string {
 func (*AppendEntriesMsg) ProtoMessage() {}
 
 func (x *AppendEntriesMsg) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_quorumpb_rpc_proto_msgTypes[3]
+	mi := &file_proto_quorumpb_rpc_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -361,7 +521,7 @@ func (x *AppendEntriesMsg) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AppendEntriesMsg.ProtoReflect.Descriptor instead.
 func (*AppendEntriesMsg) Descriptor() ([]byte, []int) {
-	return file_proto_quorumpb_rpc_proto_rawDescGZIP(), []int{3}
+	return file_proto_quorumpb_rpc_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *AppendEntriesMsg) GetTerm() uint64 {
@@ -427,7 +587,7 @@ type AppendEntriesReplyMsg struct {
 
 func (x *AppendEntriesReplyMsg) Reset() {
 	*x = AppendEntriesReplyMsg{}
-	mi := &file_proto_quorumpb_rpc_proto_msgTypes[4]
+	mi := &file_proto_quorumpb_rpc_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -439,7 +599,7 @@ func (x *AppendEntriesReplyMsg) String() string {
 func (*AppendEntriesReplyMsg) ProtoMessage() {}
 
 func (x *AppendEntriesReplyMsg) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_quorumpb_rpc_proto_msgTypes[4]
+	mi := &file_proto_quorumpb_rpc_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -452,7 +612,7 @@ func (x *AppendEntriesReplyMsg) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AppendEntriesReplyMsg.ProtoReflect.Descriptor instead.
 func (*AppendEntriesReplyMsg) Descriptor() ([]byte, []int) {
-	return file_proto_quorumpb_rpc_proto_rawDescGZIP(), []int{4}
+	return file_proto_quorumpb_rpc_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *AppendEntriesReplyMsg) GetTerm() uint64 {
@@ -505,7 +665,7 @@ type DeliverAck struct {
 
 func (x *DeliverAck) Reset() {
 	*x = DeliverAck{}
-	mi := &file_proto_quorumpb_rpc_proto_msgTypes[5]
+	mi := &file_proto_quorumpb_rpc_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -517,7 +677,7 @@ func (x *DeliverAck) String() string {
 func (*DeliverAck) ProtoMessage() {}
 
 func (x *DeliverAck) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_quorumpb_rpc_proto_msgTypes[5]
+	mi := &file_proto_quorumpb_rpc_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -530,7 +690,7 @@ func (x *DeliverAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeliverAck.ProtoReflect.Descriptor instead.
 func (*DeliverAck) Descriptor() ([]byte, []int) {
-	return file_proto_quorumpb_rpc_proto_rawDescGZIP(), []int{5}
+	return file_proto_quorumpb_rpc_proto_rawDescGZIP(), []int{7}
 }
 
 type DoRequest struct {
@@ -545,7 +705,7 @@ type DoRequest struct {
 
 func (x *DoRequest) Reset() {
 	*x = DoRequest{}
-	mi := &file_proto_quorumpb_rpc_proto_msgTypes[6]
+	mi := &file_proto_quorumpb_rpc_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -557,7 +717,7 @@ func (x *DoRequest) String() string {
 func (*DoRequest) ProtoMessage() {}
 
 func (x *DoRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_quorumpb_rpc_proto_msgTypes[6]
+	mi := &file_proto_quorumpb_rpc_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -570,7 +730,7 @@ func (x *DoRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DoRequest.ProtoReflect.Descriptor instead.
 func (*DoRequest) Descriptor() ([]byte, []int) {
-	return file_proto_quorumpb_rpc_proto_rawDescGZIP(), []int{6}
+	return file_proto_quorumpb_rpc_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *DoRequest) GetCmd() *Command {
@@ -598,7 +758,7 @@ type DoReply struct {
 
 func (x *DoReply) Reset() {
 	*x = DoReply{}
-	mi := &file_proto_quorumpb_rpc_proto_msgTypes[7]
+	mi := &file_proto_quorumpb_rpc_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -610,7 +770,7 @@ func (x *DoReply) String() string {
 func (*DoReply) ProtoMessage() {}
 
 func (x *DoReply) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_quorumpb_rpc_proto_msgTypes[7]
+	mi := &file_proto_quorumpb_rpc_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -623,7 +783,7 @@ func (x *DoReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DoReply.ProtoReflect.Descriptor instead.
 func (*DoReply) Descriptor() ([]byte, []int) {
-	return file_proto_quorumpb_rpc_proto_rawDescGZIP(), []int{7}
+	return file_proto_quorumpb_rpc_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *DoReply) GetResult() *Result {
@@ -655,7 +815,7 @@ type StatusRequest struct {
 
 func (x *StatusRequest) Reset() {
 	*x = StatusRequest{}
-	mi := &file_proto_quorumpb_rpc_proto_msgTypes[8]
+	mi := &file_proto_quorumpb_rpc_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -667,7 +827,7 @@ func (x *StatusRequest) String() string {
 func (*StatusRequest) ProtoMessage() {}
 
 func (x *StatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_quorumpb_rpc_proto_msgTypes[8]
+	mi := &file_proto_quorumpb_rpc_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -680,7 +840,7 @@ func (x *StatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatusRequest.ProtoReflect.Descriptor instead.
 func (*StatusRequest) Descriptor() ([]byte, []int) {
-	return file_proto_quorumpb_rpc_proto_rawDescGZIP(), []int{8}
+	return file_proto_quorumpb_rpc_proto_rawDescGZIP(), []int{10}
 }
 
 type StatusReply struct {
@@ -698,7 +858,7 @@ type StatusReply struct {
 
 func (x *StatusReply) Reset() {
 	*x = StatusReply{}
-	mi := &file_proto_quorumpb_rpc_proto_msgTypes[9]
+	mi := &file_proto_quorumpb_rpc_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -710,7 +870,7 @@ func (x *StatusReply) String() string {
 func (*StatusReply) ProtoMessage() {}
 
 func (x *StatusReply) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_quorumpb_rpc_proto_msgTypes[9]
+	mi := &file_proto_quorumpb_rpc_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -723,7 +883,7 @@ func (x *StatusReply) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatusReply.ProtoReflect.Descriptor instead.
 func (*StatusReply) Descriptor() ([]byte, []int) {
-	return file_proto_quorumpb_rpc_proto_rawDescGZIP(), []int{9}
+	return file_proto_quorumpb_rpc_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *StatusReply) GetId() uint64 {
@@ -779,14 +939,26 @@ var File_proto_quorumpb_rpc_proto protoreflect.FileDescriptor
 
 const file_proto_quorumpb_rpc_proto_rawDesc = "" +
 	"\n" +
-	"\x18proto/quorumpb/rpc.proto\x12\bquorumpb\x1a\x17proto/quorumpb/kv.proto\x1a\x18proto/quorumpb/wal.proto\"\xcd\x02\n" +
+	"\x18proto/quorumpb/rpc.proto\x12\bquorumpb\x1a\x17proto/quorumpb/kv.proto\x1a\x18proto/quorumpb/wal.proto\"\xf3\x03\n" +
 	"\bEnvelope\x12\x12\n" +
 	"\x04from\x18\x01 \x01(\x04R\x04from\x12=\n" +
 	"\frequest_vote\x18\x02 \x01(\v2\x18.quorumpb.RequestVoteMsgH\x00R\vrequestVote\x12M\n" +
 	"\x12request_vote_reply\x18\x03 \x01(\v2\x1d.quorumpb.RequestVoteReplyMsgH\x00R\x10requestVoteReply\x12C\n" +
 	"\x0eappend_entries\x18\x04 \x01(\v2\x1a.quorumpb.AppendEntriesMsgH\x00R\rappendEntries\x12S\n" +
-	"\x14append_entries_reply\x18\x05 \x01(\v2\x1f.quorumpb.AppendEntriesReplyMsgH\x00R\x12appendEntriesReplyB\x05\n" +
-	"\x03msg\"\x91\x01\n" +
+	"\x14append_entries_reply\x18\x05 \x01(\v2\x1f.quorumpb.AppendEntriesReplyMsgH\x00R\x12appendEntriesReply\x12I\n" +
+	"\x10install_snapshot\x18\x06 \x01(\v2\x1c.quorumpb.InstallSnapshotMsgH\x00R\x0finstallSnapshot\x12Y\n" +
+	"\x16install_snapshot_reply\x18\a \x01(\v2!.quorumpb.InstallSnapshotReplyMsgH\x00R\x14installSnapshotReplyB\x05\n" +
+	"\x03msg\"\xb7\x01\n" +
+	"\x12InstallSnapshotMsg\x12\x12\n" +
+	"\x04term\x18\x01 \x01(\x04R\x04term\x12\x1b\n" +
+	"\tleader_id\x18\x02 \x01(\x04R\bleaderId\x12.\n" +
+	"\x13last_included_index\x18\x03 \x01(\x04R\x11lastIncludedIndex\x12,\n" +
+	"\x12last_included_term\x18\x04 \x01(\x04R\x10lastIncludedTerm\x12\x12\n" +
+	"\x04data\x18\x05 \x01(\fR\x04data\"N\n" +
+	"\x17InstallSnapshotReplyMsg\x12\x12\n" +
+	"\x04term\x18\x01 \x01(\x04R\x04term\x12\x1f\n" +
+	"\vmatch_index\x18\x02 \x01(\x04R\n" +
+	"matchIndex\"\x91\x01\n" +
 	"\x0eRequestVoteMsg\x12\x12\n" +
 	"\x04term\x18\x01 \x01(\x04R\x04term\x12!\n" +
 	"\fcandidate_id\x18\x02 \x01(\x04R\vcandidateId\x12$\n" +
@@ -856,43 +1028,47 @@ func file_proto_quorumpb_rpc_proto_rawDescGZIP() []byte {
 }
 
 var file_proto_quorumpb_rpc_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_proto_quorumpb_rpc_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_proto_quorumpb_rpc_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_proto_quorumpb_rpc_proto_goTypes = []any{
-	(DoStatus)(0),                 // 0: quorumpb.DoStatus
-	(*Envelope)(nil),              // 1: quorumpb.Envelope
-	(*RequestVoteMsg)(nil),        // 2: quorumpb.RequestVoteMsg
-	(*RequestVoteReplyMsg)(nil),   // 3: quorumpb.RequestVoteReplyMsg
-	(*AppendEntriesMsg)(nil),      // 4: quorumpb.AppendEntriesMsg
-	(*AppendEntriesReplyMsg)(nil), // 5: quorumpb.AppendEntriesReplyMsg
-	(*DeliverAck)(nil),            // 6: quorumpb.DeliverAck
-	(*DoRequest)(nil),             // 7: quorumpb.DoRequest
-	(*DoReply)(nil),               // 8: quorumpb.DoReply
-	(*StatusRequest)(nil),         // 9: quorumpb.StatusRequest
-	(*StatusReply)(nil),           // 10: quorumpb.StatusReply
-	(*Entry)(nil),                 // 11: quorumpb.Entry
-	(*Command)(nil),               // 12: quorumpb.Command
-	(*Result)(nil),                // 13: quorumpb.Result
+	(DoStatus)(0),                   // 0: quorumpb.DoStatus
+	(*Envelope)(nil),                // 1: quorumpb.Envelope
+	(*InstallSnapshotMsg)(nil),      // 2: quorumpb.InstallSnapshotMsg
+	(*InstallSnapshotReplyMsg)(nil), // 3: quorumpb.InstallSnapshotReplyMsg
+	(*RequestVoteMsg)(nil),          // 4: quorumpb.RequestVoteMsg
+	(*RequestVoteReplyMsg)(nil),     // 5: quorumpb.RequestVoteReplyMsg
+	(*AppendEntriesMsg)(nil),        // 6: quorumpb.AppendEntriesMsg
+	(*AppendEntriesReplyMsg)(nil),   // 7: quorumpb.AppendEntriesReplyMsg
+	(*DeliverAck)(nil),              // 8: quorumpb.DeliverAck
+	(*DoRequest)(nil),               // 9: quorumpb.DoRequest
+	(*DoReply)(nil),                 // 10: quorumpb.DoReply
+	(*StatusRequest)(nil),           // 11: quorumpb.StatusRequest
+	(*StatusReply)(nil),             // 12: quorumpb.StatusReply
+	(*Entry)(nil),                   // 13: quorumpb.Entry
+	(*Command)(nil),                 // 14: quorumpb.Command
+	(*Result)(nil),                  // 15: quorumpb.Result
 }
 var file_proto_quorumpb_rpc_proto_depIdxs = []int32{
-	2,  // 0: quorumpb.Envelope.request_vote:type_name -> quorumpb.RequestVoteMsg
-	3,  // 1: quorumpb.Envelope.request_vote_reply:type_name -> quorumpb.RequestVoteReplyMsg
-	4,  // 2: quorumpb.Envelope.append_entries:type_name -> quorumpb.AppendEntriesMsg
-	5,  // 3: quorumpb.Envelope.append_entries_reply:type_name -> quorumpb.AppendEntriesReplyMsg
-	11, // 4: quorumpb.AppendEntriesMsg.entries:type_name -> quorumpb.Entry
-	12, // 5: quorumpb.DoRequest.cmd:type_name -> quorumpb.Command
-	13, // 6: quorumpb.DoReply.result:type_name -> quorumpb.Result
-	0,  // 7: quorumpb.DoReply.status:type_name -> quorumpb.DoStatus
-	1,  // 8: quorumpb.RaftTransport.Deliver:input_type -> quorumpb.Envelope
-	7,  // 9: quorumpb.QuorumKV.Do:input_type -> quorumpb.DoRequest
-	9,  // 10: quorumpb.QuorumKV.Status:input_type -> quorumpb.StatusRequest
-	6,  // 11: quorumpb.RaftTransport.Deliver:output_type -> quorumpb.DeliverAck
-	8,  // 12: quorumpb.QuorumKV.Do:output_type -> quorumpb.DoReply
-	10, // 13: quorumpb.QuorumKV.Status:output_type -> quorumpb.StatusReply
-	11, // [11:14] is the sub-list for method output_type
-	8,  // [8:11] is the sub-list for method input_type
-	8,  // [8:8] is the sub-list for extension type_name
-	8,  // [8:8] is the sub-list for extension extendee
-	0,  // [0:8] is the sub-list for field type_name
+	4,  // 0: quorumpb.Envelope.request_vote:type_name -> quorumpb.RequestVoteMsg
+	5,  // 1: quorumpb.Envelope.request_vote_reply:type_name -> quorumpb.RequestVoteReplyMsg
+	6,  // 2: quorumpb.Envelope.append_entries:type_name -> quorumpb.AppendEntriesMsg
+	7,  // 3: quorumpb.Envelope.append_entries_reply:type_name -> quorumpb.AppendEntriesReplyMsg
+	2,  // 4: quorumpb.Envelope.install_snapshot:type_name -> quorumpb.InstallSnapshotMsg
+	3,  // 5: quorumpb.Envelope.install_snapshot_reply:type_name -> quorumpb.InstallSnapshotReplyMsg
+	13, // 6: quorumpb.AppendEntriesMsg.entries:type_name -> quorumpb.Entry
+	14, // 7: quorumpb.DoRequest.cmd:type_name -> quorumpb.Command
+	15, // 8: quorumpb.DoReply.result:type_name -> quorumpb.Result
+	0,  // 9: quorumpb.DoReply.status:type_name -> quorumpb.DoStatus
+	1,  // 10: quorumpb.RaftTransport.Deliver:input_type -> quorumpb.Envelope
+	9,  // 11: quorumpb.QuorumKV.Do:input_type -> quorumpb.DoRequest
+	11, // 12: quorumpb.QuorumKV.Status:input_type -> quorumpb.StatusRequest
+	8,  // 13: quorumpb.RaftTransport.Deliver:output_type -> quorumpb.DeliverAck
+	10, // 14: quorumpb.QuorumKV.Do:output_type -> quorumpb.DoReply
+	12, // 15: quorumpb.QuorumKV.Status:output_type -> quorumpb.StatusReply
+	13, // [13:16] is the sub-list for method output_type
+	10, // [10:13] is the sub-list for method input_type
+	10, // [10:10] is the sub-list for extension type_name
+	10, // [10:10] is the sub-list for extension extendee
+	0,  // [0:10] is the sub-list for field type_name
 }
 
 func init() { file_proto_quorumpb_rpc_proto_init() }
@@ -907,6 +1083,8 @@ func file_proto_quorumpb_rpc_proto_init() {
 		(*Envelope_RequestVoteReply)(nil),
 		(*Envelope_AppendEntries)(nil),
 		(*Envelope_AppendEntriesReply)(nil),
+		(*Envelope_InstallSnapshot)(nil),
+		(*Envelope_InstallSnapshotReply)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -914,7 +1092,7 @@ func file_proto_quorumpb_rpc_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_quorumpb_rpc_proto_rawDesc), len(file_proto_quorumpb_rpc_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   10,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   2,
 		},

@@ -11,7 +11,12 @@ import "github.com/Dario-Zela/quorum/raft"
 type State struct {
 	Term    uint64
 	Vote    raft.NodeID
-	Entries []raft.Entry
+	Entries []raft.Entry // contiguous from SnapIndex+1
+
+	// Snapshot boundary: the state machine's serialized state at SnapIndex.
+	SnapIndex uint64
+	SnapTerm  uint64
+	SnapData  []byte
 }
 
 // Store persists raft hard state. Persist must complete durably before the
