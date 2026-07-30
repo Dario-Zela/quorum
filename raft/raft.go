@@ -52,6 +52,19 @@ type Raft struct {
 	nextIndex  map[NodeID]uint64
 	matchIndex map[NodeID]uint64
 
+	// ReadIndex state (leader only). The gate: no reads are served until
+	// this leader's own-term no-op (noopIndex) commits — before that its
+	// commitIndex can be BEHIND entries the previous leader committed (it
+	// holds them but cannot count them), so readIndex := commitIndex would
+	// miss committed writes. The most-omitted line in ReadIndex writeups.
+	noopIndex    uint64
+	readQueue    []uint64 // ctxs accumulating for the next round
+	roundCounter uint64
+	curRound     uint64 // 0 = no confirmation round in flight
+	roundIndex   uint64 // readIndex recorded when curRound dispatched
+	roundReads   []uint64
+	roundAcks    map[NodeID]bool
+
 	// Per-Step scratch for building Output.PersistHard.
 	hardDirty    bool
 	truncateFrom uint64
@@ -159,8 +172,22 @@ func (r *Raft) Step(in Input) Output {
 		r.recv(v.From, v.Msg, &out)
 	case Propose:
 		r.propose(v.Data, &out)
+	case ReadIndexReq:
+		r.readIndex(v.Ctx, &out)
 	default:
 		panic(fmt.Sprintf("raft: unknown input %T", in))
+	}
+	// Losing leadership fails every pending read immediately; the server
+	// layer turns that into a retryable redirect.
+	if r.role != Leader && (len(r.readQueue) > 0 || r.curRound != 0) {
+		for _, ctx := range r.readQueue {
+			out.ReadReady = append(out.ReadReady, ReadState{Ctx: ctx})
+		}
+		for _, ctx := range r.roundReads {
+			out.ReadReady = append(out.ReadReady, ReadState{Ctx: ctx})
+		}
+		r.readQueue, r.roundReads, r.roundAcks = nil, nil, nil
+		r.curRound = 0
 	}
 	if r.hardDirty || r.truncateFrom != 0 || len(r.appended) > 0 {
 		out.PersistHard = &HardState{
@@ -245,11 +272,15 @@ func (r *Raft) becomeLeader(out *Output) {
 	// toward its majority; forgetting this stalls commits and is invisible
 	// in happy-path tests with fast followers.
 	r.matchIndex[r.id] = r.log.LastIndex()
+	r.noopIndex = 0
+	r.readQueue, r.roundReads, r.roundAcks = nil, nil, nil
+	r.curRound = 0
 	// The no-op is not an optimization: under the §5.4.2 commit rule it is
 	// the only way prior-term entries ever commit, and ReadIndex is
 	// unserviceable until it commits.
 	if !r.unsafeCommitRule {
-		r.appendToOwnLog(nil)
+		e := r.appendToOwnLog(nil)
+		r.noopIndex = e.Index
 		r.maybeCommit(out) // single-node cluster commits immediately
 	}
 	r.broadcastAppend(out)
@@ -321,12 +352,64 @@ func (r *Raft) sendAppend(p NodeID, out *Output) {
 		PrevLogTerm:  prevTerm,
 		Entries:      r.log.Slice(next, r.log.LastIndex()+1),
 		LeaderCommit: r.commitIndex,
+		Round:        r.curRound,
 	}})
+}
+
+// --- linearizable reads (ReadIndex) ---
+
+func (r *Raft) readIndex(ctx uint64, out *Output) {
+	if r.role != Leader {
+		out.ReadReady = append(out.ReadReady, ReadState{Ctx: ctx})
+		return
+	}
+	r.readQueue = append(r.readQueue, ctx)
+	r.tryDispatchRound(out)
+}
+
+// tryDispatchRound starts a confirmation round for the queued reads: the
+// round number is issued AFTER readIndex is recorded, and reads arriving
+// while a round is in flight join the next one. Blocked until the gate
+// (own-term no-op committed) passes.
+func (r *Raft) tryDispatchRound(out *Output) {
+	if r.curRound != 0 || len(r.readQueue) == 0 || r.noopIndex == 0 || r.commitIndex < r.noopIndex {
+		return
+	}
+	r.roundIndex = r.commitIndex
+	r.roundCounter++
+	r.curRound = r.roundCounter
+	r.roundReads = r.readQueue
+	r.readQueue = nil
+	r.roundAcks = map[NodeID]bool{r.id: true}
+	if r.hasMajority(len(r.roundAcks)) { // single-node cluster
+		r.completeRound(out)
+		return
+	}
+	r.broadcastAppend(out)
+}
+
+func (r *Raft) completeRound(out *Output) {
+	for _, ctx := range r.roundReads {
+		out.ReadReady = append(out.ReadReady, ReadState{Ctx: ctx, Index: r.roundIndex, OK: true})
+	}
+	r.curRound = 0
+	r.roundReads, r.roundAcks = nil, nil
+	r.tryDispatchRound(out) // reads that arrived mid-round go next
 }
 
 func (r *Raft) handleAppendEntriesReply(from NodeID, m AppendEntriesReply, out *Output) {
 	if r.role != Leader || m.Term < r.term {
 		return // stale reply
+	}
+	// ReadIndex confirmation: ANY same-term reply echoing the current round
+	// proves the follower recognizes our leadership now — a failed
+	// consistency check confirms leadership just as well as a success.
+	// Earlier rounds' echoes must not count (response reordering).
+	if r.curRound != 0 && m.Round == r.curRound {
+		r.roundAcks[from] = true
+		if r.hasMajority(len(r.roundAcks)) {
+			r.completeRound(out)
+		}
 	}
 	if m.Success {
 		// Replies reorder in flight: only ever advance.
@@ -383,6 +466,8 @@ func (r *Raft) maybeCommit(out *Output) {
 		if r.hasMajority(count) {
 			r.commitIndex = n
 			r.emitApply(out)
+			// Commit advancing can open the read gate (no-op committed).
+			r.tryDispatchRound(out)
 			return
 		}
 	}
@@ -491,6 +576,7 @@ func (r *Raft) handleAppendEntries(from NodeID, m AppendEntries, out *Output) {
 		out.Send = append(out.Send, AddressedMsg{To: from, Msg: AppendEntriesReply{
 			Term: r.term, Success: false,
 			ConflictIndex: r.log.LastIndex() + 1,
+			Round:         m.Round,
 		}})
 		return
 	}
@@ -501,6 +587,7 @@ func (r *Raft) handleAppendEntries(from NodeID, m AppendEntries, out *Output) {
 			Term: r.term, Success: false,
 			ConflictIndex: r.log.firstIndexOfTerm(m.PrevLogIndex, prevTerm),
 			ConflictTerm:  prevTerm,
+			Round:         m.Round,
 		}})
 		return
 	}
@@ -539,5 +626,6 @@ func (r *Raft) handleAppendEntries(from NodeID, m AppendEntries, out *Output) {
 	out.Send = append(out.Send, AddressedMsg{To: from, Msg: AppendEntriesReply{
 		Term: r.term, Success: true,
 		MatchIndex: lastNew,
+		Round:      m.Round,
 	}})
 }

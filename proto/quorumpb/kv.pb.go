@@ -32,6 +32,9 @@ const (
 	OpType_OP_PUT         OpType = 2
 	OpType_OP_DELETE      OpType = 3
 	OpType_OP_CAS         OpType = 4
+	// OP_GET is a request-envelope op only: reads never enter the log — they
+	// take the ReadIndex path.
+	OpType_OP_GET OpType = 5
 )
 
 // Enum value maps for OpType.
@@ -42,6 +45,7 @@ var (
 		2: "OP_PUT",
 		3: "OP_DELETE",
 		4: "OP_CAS",
+		5: "OP_GET",
 	}
 	OpType_value = map[string]int32{
 		"OP_UNSPECIFIED": 0,
@@ -49,6 +53,7 @@ var (
 		"OP_PUT":         2,
 		"OP_DELETE":      3,
 		"OP_CAS":         4,
+		"OP_GET":         5,
 	}
 )
 
@@ -252,7 +257,7 @@ const file_proto_quorumpb_kv_proto_rawDesc = "" +
 	"\x05value\x18\x01 \x01(\tR\x05value\x12\x15\n" +
 	"\x06cas_ok\x18\x02 \x01(\bR\x05casOk\x12\x1b\n" +
 	"\tclient_id\x18\x03 \x01(\x04R\bclientId\x12\x10\n" +
-	"\x03err\x18\x04 \x01(\rR\x03err*T\n" +
+	"\x03err\x18\x04 \x01(\rR\x03err*`\n" +
 	"\x06OpType\x12\x12\n" +
 	"\x0eOP_UNSPECIFIED\x10\x00\x12\x0f\n" +
 	"\vOP_REGISTER\x10\x01\x12\n" +
@@ -260,7 +265,9 @@ const file_proto_quorumpb_kv_proto_rawDesc = "" +
 	"\x06OP_PUT\x10\x02\x12\r\n" +
 	"\tOP_DELETE\x10\x03\x12\n" +
 	"\n" +
-	"\x06OP_CAS\x10\x04B-Z+github.com/Dario-Zela/quorum/proto/quorumpbb\x06proto3"
+	"\x06OP_CAS\x10\x04\x12\n" +
+	"\n" +
+	"\x06OP_GET\x10\x05B-Z+github.com/Dario-Zela/quorum/proto/quorumpbb\x06proto3"
 
 var (
 	file_proto_quorumpb_kv_proto_rawDescOnce sync.Once

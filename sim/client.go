@@ -5,10 +5,22 @@ import (
 	"math"
 	"math/rand"
 
+	"google.golang.org/protobuf/proto"
+
 	"github.com/Dario-Zela/quorum/kv"
 	"github.com/Dario-Zela/quorum/proto/quorumpb"
 	"github.com/Dario-Zela/quorum/raft"
 )
+
+// decodeCommand parses a request envelope; the sim's server logic routes
+// OP_GET to ReadIndex and everything else to Propose.
+func decodeCommand(b []byte) *quorumpb.Command {
+	var c quorumpb.Command
+	if err := proto.Unmarshal(b, &c); err != nil {
+		panic(fmt.Sprintf("sim: undecodable client command: %v", err))
+	}
+	return &c
+}
 
 // Simulated clients implement the design's retry state machine
 // (DISCOVER → SEND → {done, retry}) as event-driven actors, and every op
@@ -112,9 +124,17 @@ func (a *clientActor) invoke(now LogicalTime) *quorumpb.Command {
 		a.pendingCmd = &quorumpb.Command{Op: quorumpb.OpType_OP_REGISTER}
 		return a.pendingCmd
 	}
-	a.seq++
 	key := fmt.Sprintf("k%d", a.rng.Intn(3))
 	op := &histOp{Key: key, invokedAt: now}
+	if a.rng.Intn(4) == 0 {
+		// Linearizable read: carries no Seq (idempotent, retries freely)
+		// and never enters the log — served via ReadIndex.
+		op.Op = opGet
+		a.pending = op
+		a.pendingCmd = &quorumpb.Command{Op: quorumpb.OpType_OP_GET, Key: key}
+		return a.pendingCmd
+	}
+	a.seq++
 	switch a.rng.Intn(3) {
 	case 0:
 		op.Op = opPut
@@ -143,11 +163,15 @@ func (a *clientActor) complete(now LogicalTime, res kv.Result) {
 	op := a.pending
 	op.returnedAt = now
 	op.casOK = res.CASOk
-	if op.Op == opCAS && res.CASOk {
+	switch {
+	case op.Op == opGet:
+		op.getVal = res.Value
+		a.lastCAS[op.Key] = res.Value // a fresh observation improves CAS guesses
+	case op.Op == opCAS && res.CASOk:
 		a.lastCAS[op.Key] = op.Val
-	} else if op.Op == opPut {
+	case op.Op == opPut:
 		a.lastCAS[op.Key] = op.Val
-	} else if op.Op == opDelete {
+	case op.Op == opDelete:
 		a.lastCAS[op.Key] = ""
 	}
 	a.history = append(a.history, *op)

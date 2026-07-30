@@ -60,6 +60,10 @@ type RequestVoteReply struct {
 }
 
 // AppendEntries replicates log entries; with no entries it is a heartbeat.
+// Round tags the append with the leader's current ReadIndex confirmation
+// round (0 = none); followers echo it so acks from earlier rounds cannot
+// satisfy a later confirmation — response reordering would otherwise sneak
+// the deposed-leader race back in.
 type AppendEntries struct {
 	Term         uint64
 	LeaderID     NodeID
@@ -67,6 +71,7 @@ type AppendEntries struct {
 	PrevLogTerm  uint64
 	Entries      []Entry
 	LeaderCommit uint64
+	Round        uint64
 }
 
 // AppendEntriesReply answers an AppendEntries. On success MatchIndex is the
@@ -82,6 +87,7 @@ type AppendEntriesReply struct {
 	MatchIndex    uint64
 	ConflictIndex uint64
 	ConflictTerm  uint64
+	Round         uint64 // echoed from the AppendEntries being answered
 }
 
 func (RequestVote) isMessage()        {}
@@ -108,9 +114,17 @@ type Propose struct {
 	Data []byte
 }
 
-func (MsgRecv) isInput() {}
-func (Tick) isInput()    {}
-func (Propose) isInput() {}
+// ReadIndexReq asks the leader for a linearizable read point. Ctx is a
+// caller-chosen id returned in the matching ReadState. Reads never enter
+// the log; they cost one confirmation round of heartbeats, batched.
+type ReadIndexReq struct {
+	Ctx uint64
+}
+
+func (MsgRecv) isInput()      {}
+func (Tick) isInput()         {}
+func (Propose) isInput()      {}
+func (ReadIndexReq) isInput() {}
 
 // AddressedMsg is a message the caller must transmit to To.
 type AddressedMsg struct {
@@ -137,6 +151,15 @@ type Receipt struct {
 	Term  uint64
 }
 
+// ReadState answers a ReadIndexReq. When OK, the caller may serve the read
+// from local state once lastApplied >= Index. When !OK the node is not (or
+// no longer) a leader able to confirm — retry via the current leader.
+type ReadState struct {
+	Ctx   uint64
+	Index uint64
+	OK    bool
+}
+
 // Output is the result of one Step. The caller must process it fully,
 // in this order, before the next Step:
 //
@@ -152,6 +175,7 @@ type Output struct {
 	PersistHard  *HardState
 	ApplyEntries []Entry
 	Proposed     *Receipt
+	ReadReady    []ReadState
 }
 
 // Status is a read-only snapshot of the core for observability, redirects,

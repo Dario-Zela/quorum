@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/Dario-Zela/quorum/kv"
+	"github.com/Dario-Zela/quorum/proto/quorumpb"
 	"github.com/Dario-Zela/quorum/raft"
 	"github.com/Dario-Zela/quorum/storage/memstore"
 )
@@ -87,6 +88,16 @@ type World struct {
 	violation  *Violation
 	nemesisOff bool
 	clients    []*clientActor
+
+	// In-flight ReadIndex requests: ctx → who asked, for which key.
+	readCtx      uint64
+	pendingReads map[uint64]pendingRead
+}
+
+type pendingRead struct {
+	client  int
+	attempt uint64
+	key     string
 }
 
 // New builds a world of cfg.Nodes fresh followers and schedules their ticks.
@@ -98,10 +109,11 @@ func New(cfg Config) *World {
 		cfg.MaxLatency = 3
 	}
 	w := &World{
-		cfg:   cfg,
-		rng:   rand.New(rand.NewSource(cfg.Seed)),
-		Net:   newPartitionMatrix(),
-		check: newChecker(),
+		cfg:          cfg,
+		rng:          rand.New(rand.NewSource(cfg.Seed)),
+		Net:          newPartitionMatrix(),
+		check:        newChecker(),
+		pendingReads: make(map[uint64]pendingRead),
 	}
 	ids := make([]raft.NodeID, cfg.Nodes)
 	for i := range ids {
@@ -389,6 +401,14 @@ func (w *World) serveClientReq(e Event, shell *NodeShell) {
 		respond(&clientOutcome{notLeader: true, hint: shell.R.Status().LeaderHint})
 		return
 	}
+	if cmd := decodeCommand(e.Cmd); cmd.Op == quorumpb.OpType_OP_GET {
+		// Linearizable read: ReadIndex, never the log. The answer arrives
+		// via Output.ReadReady on a later step.
+		w.readCtx++
+		w.pendingReads[w.readCtx] = pendingRead{client: e.Client, attempt: e.Attempt, key: cmd.Key}
+		w.stepNode(e, shell, raft.ReadIndexReq{Ctx: w.readCtx})
+		return
+	}
 	out := w.stepNode(e, shell, raft.Propose{Data: e.Cmd})
 	if out.Proposed == nil {
 		respond(&clientOutcome{notLeader: true})
@@ -549,6 +569,31 @@ func (w *World) stepNode(e Event, shell *NodeShell, in raft.Input) raft.Output {
 		if isCmd {
 			shell.Waiters.Applied(applied.Index, applied.Term, res)
 		}
+	}
+
+	for _, rs := range out.ReadReady {
+		pr, ok := w.pendingReads[rs.Ctx]
+		if !ok {
+			continue
+		}
+		delete(w.pendingReads, rs.Ctx)
+		delay := LogicalTime(1 + w.rng.Intn(w.cfg.MaxLatency))
+		if !rs.OK {
+			w.tracef("t=%d #%d read-fail node=%d ctx=%d", e.At, e.Seq, shell.ID, rs.Ctx)
+			w.push(Event{At: e.At + delay, Kind: EvClientResp, Client: pr.client, Attempt: pr.attempt, Out: &clientOutcome{lost: true}})
+			continue
+		}
+		// Serve from local state once lastApplied covers the read index. In
+		// the sim applies are synchronous with commit, so this must already
+		// hold — machine-check it rather than assume it.
+		if la := shell.R.Status().LastApplied; la < rs.Index {
+			w.violation = &Violation{w.now, e.Seq, fmt.Sprintf(
+				"readindex: node %d would serve read at index %d with lastApplied %d", shell.ID, rs.Index, la)}
+			return out
+		}
+		val := shell.KV.Get(pr.key)
+		w.tracef("t=%d #%d read-serve node=%d ctx=%d idx=%d %s=%q", e.At, e.Seq, shell.ID, rs.Ctx, rs.Index, pr.key, val)
+		w.push(Event{At: e.At + delay, Kind: EvClientResp, Client: pr.client, Attempt: pr.attempt, Out: &clientOutcome{res: kv.Result{Value: val}}})
 	}
 
 	st := shell.R.Status()

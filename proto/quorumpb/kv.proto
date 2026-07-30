@@ -12,6 +12,9 @@ enum OpType {
   OP_PUT         = 2;
   OP_DELETE      = 3;
   OP_CAS         = 4;
+  // OP_GET is a request-envelope op only: reads never enter the log — they
+  // take the ReadIndex path.
+  OP_GET         = 5;
 }
 
 // Command is one replicated state-machine command. Reads (Get) never enter
