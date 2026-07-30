@@ -1,0 +1,16 @@
+# Binaries
+/bin/
+*.test
+
+# Data directories from local runs
+/data/
+*.wal
+*.db
+
+# Editor
+.idea/
+.vscode/
+.DS_Store
+
+# Benchmark / demo artifacts
+/deploy/recordings/*.cast
