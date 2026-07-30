@@ -1,0 +1,85 @@
+{
+  "title": "Quorum cluster",
+  "uid": "quorum",
+  "timezone": "utc",
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Leadership (1 = leader)",
+      "type": "state-timeline",
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 5 },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "fillOpacity": 70 },
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "follower", "color": "dark-blue" }, "1": { "text": "LEADER", "color": "green" } } }
+          ]
+        },
+        "overrides": []
+      },
+      "targets": [
+        { "expr": "quorum_is_leader", "legendFormat": "node {{node}}", "refId": "A" }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Term",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 5, "w": 8, "h": 7 },
+      "targets": [
+        { "expr": "quorum_term", "legendFormat": "node {{node}}", "refId": "A" }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Elections started (rate/min)",
+      "type": "timeseries",
+      "gridPos": { "x": 8, "y": 5, "w": 8, "h": 7 },
+      "targets": [
+        { "expr": "sum(rate(quorum_elections_total[1m])) * 60", "legendFormat": "elections/min", "refId": "A" }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Proposals (rate/s, leader)",
+      "type": "timeseries",
+      "gridPos": { "x": 16, "y": 5, "w": 8, "h": 7 },
+      "targets": [
+        { "expr": "sum(rate(quorum_proposals_total[30s]))", "legendFormat": "proposals/s", "refId": "A" }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Commit index",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 12, "w": 8, "h": 7 },
+      "targets": [
+        { "expr": "quorum_commit_index", "legendFormat": "node {{node}}", "refId": "A" }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Apply lag (commit − applied)",
+      "type": "timeseries",
+      "gridPos": { "x": 8, "y": 12, "w": 8, "h": 7 },
+      "targets": [
+        { "expr": "quorum_commit_index - quorum_last_applied", "legendFormat": "node {{node}}", "refId": "A" }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Client op latency (p50 / p99)",
+      "type": "timeseries",
+      "gridPos": { "x": 16, "y": 12, "w": 8, "h": 7 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "expr": "histogram_quantile(0.5, sum(rate(quorum_do_seconds_bucket[1m])) by (le))", "legendFormat": "p50", "refId": "A" },
+        { "expr": "histogram_quantile(0.99, sum(rate(quorum_do_seconds_bucket[1m])) by (le))", "legendFormat": "p99", "refId": "B" }
+      ]
+    }
+  ],
+  "schemaVersion": 39,
+  "version": 1
+}

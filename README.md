@@ -137,7 +137,15 @@ docker compose exec node1 quorum-cli -cluster \
 ```
 
 `quorum-cli` speaks `put / get [-stale] / cas / del / status / watch / bench`. Each node
-also serves Prometheus counters on `/metrics`.
+also serves Prometheus counters on `/metrics`, and
+
+```bash
+docker compose --profile obs up -d
+```
+
+adds Prometheus + a provisioned Grafana dashboard (http://localhost:3000): leadership
+timeline, terms, election rate, proposal throughput, apply lag, and client-latency
+percentiles — watch the leader panel flip colors while `chaos.sh` runs.
 
 ## Layout
 
@@ -158,8 +166,11 @@ Dependency rule, enforced in CI: `raft/` imports stdlib only; `sim/` never impor
 production transport or storage.
 
 Deliberate non-goals (membership changes above all — the #1 scope trap) are recorded with
-reasons in [FUTURE.md](FUTURE.md). The full design contract is
-[docs/design.md](docs/design.md); decisions in [docs/adr/](docs/adr/).
+reasons in [FUTURE.md](FUTURE.md), alongside the acknowledged-but-unbuilt list: chunked
+InstallSnapshot, leadership transfer, lease reads (and why each costs what it costs).
+Next up (v1.1): **pre-vote + CheckQuorum** — the chaos demo visibly exhibits the disease
+they cure, a revived node's inflated term deposing a healthy leader. The full design
+contract is [docs/design.md](docs/design.md); decisions in [docs/adr/](docs/adr/).
 
 ## References
 

@@ -251,6 +251,7 @@ func (n *Node) handleDo(req doReq) raft.Output {
 		req.resp <- &quorumpb.DoReply{Status: quorumpb.DoStatus_DO_NOT_LEADER, LeaderHint: uint64(st.LeaderHint)}
 		return raft.Output{}
 	}
+	n.metrics.proposals.Inc()
 	out := n.core.Step(raft.Propose{Data: kv.EncodeCommand(req.cmd)})
 	if out.Proposed == nil {
 		req.resp <- &quorumpb.DoReply{Status: quorumpb.DoStatus_DO_NOT_LEADER}
@@ -390,11 +391,17 @@ func (s *kvService) Do(ctx context.Context, req *quorumpb.DoRequest) (*quorumpb.
 	if req.Cmd == nil {
 		return nil, fmt.Errorf("empty command")
 	}
+	start := time.Now()
+	outcome := "error"
+	defer func() {
+		s.n.metrics.doLatency.WithLabelValues(req.Cmd.Op.String(), outcome).Observe(time.Since(start).Seconds())
+	}()
 	// Stale read mode: any node, no protocol — for the bench contrast table.
 	if req.StaleRead && req.Cmd.Op == quorumpb.OpType_OP_GET {
 		s.n.kvMu.Lock()
 		val := s.n.kvStore.Get(req.Cmd.Key)
 		s.n.kvMu.Unlock()
+		outcome = "DO_OK_STALE"
 		return &quorumpb.DoReply{Result: &quorumpb.Result{Value: val}}, nil
 	}
 	r := doReq{cmd: req.Cmd, resp: make(chan *quorumpb.DoReply, 1)}
@@ -405,6 +412,7 @@ func (s *kvService) Do(ctx context.Context, req *quorumpb.DoRequest) (*quorumpb.
 	}
 	select {
 	case reply := <-r.resp:
+		outcome = reply.Status.String()
 		return reply, nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -442,6 +450,8 @@ type metrics struct {
 	applied   prometheus.Gauge
 	isLeader  prometheus.Gauge
 	elections prometheus.Counter
+	proposals prometheus.Counter
+	doLatency *prometheus.HistogramVec
 }
 
 func newMetrics(id uint64) *metrics {
@@ -454,8 +464,15 @@ func newMetrics(id uint64) *metrics {
 		applied:   prometheus.NewGauge(prometheus.GaugeOpts{Name: "quorum_last_applied", ConstLabels: labels}),
 		isLeader:  prometheus.NewGauge(prometheus.GaugeOpts{Name: "quorum_is_leader", ConstLabels: labels}),
 		elections: prometheus.NewCounter(prometheus.CounterOpts{Name: "quorum_elections_total", ConstLabels: labels}),
+		proposals: prometheus.NewCounter(prometheus.CounterOpts{Name: "quorum_proposals_total", ConstLabels: labels}),
+		doLatency: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:        "quorum_do_seconds",
+			Help:        "Client Do RPC latency by op and outcome.",
+			ConstLabels: labels,
+			Buckets:     prometheus.ExponentialBuckets(0.0001, 2.5, 14),
+		}, []string{"op", "outcome"}),
 	}
-	reg.MustRegister(m.term, m.commit, m.applied, m.isLeader, m.elections)
+	reg.MustRegister(m.term, m.commit, m.applied, m.isLeader, m.elections, m.proposals, m.doLatency)
 	return m
 }
 

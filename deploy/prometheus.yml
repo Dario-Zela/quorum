@@ -1,0 +1,12 @@
+global:
+  scrape_interval: 2s
+
+scrape_configs:
+  - job_name: quorum
+    static_configs:
+      - targets:
+          - node1:2112
+          - node2:2112
+          - node3:2112
+          - node4:2112
+          - node5:2112
