@@ -136,7 +136,7 @@ func figureEight(t *testing.T, seed int64, unsafe bool) *Violation {
 	if !unsafe {
 		if err := w.Run(maxEvents, func(w *World) bool {
 			for _, id := range w.IDs() {
-				if len(w.Node(id).Log) < 1 {
+				if len(w.Node(id).Log()) < 1 {
 					return false
 				}
 			}

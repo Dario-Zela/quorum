@@ -42,8 +42,13 @@ type checker struct {
 
 	// committed[i] is the entry the cluster as a whole committed at index i
 	// (recorded the first time any node's commitIndex covers i). Once here,
-	// it may never change.
-	committed    map[uint64]raft.Entry
+	// it may never change. commitTerm is the observer's term at recording —
+	// a sound upper bound on the term the commit happened in, which Leader
+	// Completeness needs: a leader is only obliged to hold entries
+	// committed in terms BELOW its own. A stale candidacy that completes
+	// after a pause can legally produce a leader of an older term lacking
+	// newer commits (the GC-stall scenario) — that is not a violation.
+	committed    map[uint64]committedEntry
 	maxCommitted uint64
 	lastCommit   map[raft.NodeID]uint64
 	appliedUpTo  map[raft.NodeID]uint64
@@ -53,12 +58,17 @@ type checker struct {
 	matchedUpTo map[[2]raft.NodeID]uint64
 }
 
+type committedEntry struct {
+	e          raft.Entry
+	commitTerm uint64
+}
+
 func newChecker() *checker {
 	return &checker{
 		leaderByTerm:     make(map[uint64]raft.NodeID),
 		candidatesByTerm: make(map[uint64]map[raft.NodeID]bool),
 		lastTerm:         make(map[raft.NodeID]uint64),
-		committed:        make(map[uint64]raft.Entry),
+		committed:        make(map[uint64]committedEntry),
 		lastCommit:       make(map[raft.NodeID]uint64),
 		appliedUpTo:      make(map[raft.NodeID]uint64),
 		matchedUpTo:      make(map[[2]raft.NodeID]uint64),
@@ -75,8 +85,26 @@ func (c *checker) fail(format string, args ...any) *Violation {
 
 // CommittedEntry returns the entry the cluster committed at index i.
 func (c *checker) CommittedEntry(i uint64) (raft.Entry, bool) {
-	e, ok := c.committed[i]
-	return e, ok
+	ce, ok := c.committed[i]
+	return ce.e, ok
+}
+
+// record notes entry e as cluster-committed at index e.Index, observed by a
+// node currently at observerTerm. Returns a violation if it contradicts an
+// earlier recording.
+func (c *checker) record(node raft.NodeID, e raft.Entry, observerTerm uint64, how string) *Violation {
+	if prev, seen := c.committed[e.Index]; seen {
+		if !entriesEqual(prev.e, e) {
+			return c.fail("state-machine safety: node %d %s %+v at index %d but the cluster committed %+v",
+				node, how, e, e.Index, prev.e)
+		}
+		return nil
+	}
+	c.committed[e.Index] = committedEntry{e: e, commitTerm: observerTerm}
+	if e.Index > c.maxCommitted {
+		c.maxCommitted = e.Index
+	}
+	return nil
 }
 
 // SplitVoteTerms counts terms in which more than one candidate stood.
@@ -97,10 +125,11 @@ func entriesEqual(a, b raft.Entry) bool {
 // entryAt fetches index i from a shell's durable log (contiguous from 1
 // until compaction lands).
 func entryAt(s *NodeShell, i uint64) (raft.Entry, bool) {
-	if i < 1 || i > uint64(len(s.Log)) {
+	log := s.Log()
+	if i < 1 || i > uint64(len(log)) {
 		return raft.Entry{}, false
 	}
-	e := s.Log[i-1]
+	e := log[i-1]
 	if e.Index != i {
 		panic(fmt.Sprintf("sim: durable log of node %d not contiguous: position %d holds index %d", s.ID, i, e.Index))
 	}
@@ -127,23 +156,12 @@ func (c *checker) observeTruncate(node raft.NodeID, i uint64) {
 }
 
 // observeApply checks State-Machine Safety for one applied entry.
-func (c *checker) observeApply(node raft.NodeID, e raft.Entry) *Violation {
+func (c *checker) observeApply(node raft.NodeID, observerTerm uint64, e raft.Entry) *Violation {
 	if e.Index != c.appliedUpTo[node]+1 {
 		return c.fail("apply order: node %d applied index %d after %d", node, e.Index, c.appliedUpTo[node])
 	}
 	c.appliedUpTo[node] = e.Index
-	if prev, ok := c.committed[e.Index]; ok {
-		if !entriesEqual(prev, e) {
-			return c.fail("state-machine safety: node %d applied %+v at index %d but the cluster committed %+v",
-				node, e, e.Index, prev)
-		}
-	} else {
-		c.committed[e.Index] = e
-		if e.Index > c.maxCommitted {
-			c.maxCommitted = e.Index
-		}
-	}
-	return nil
+	return c.record(node, e, observerTerm, "applied")
 }
 
 // observeStatus checks Election Safety, Leader Completeness, monotonic
@@ -167,18 +185,10 @@ func (c *checker) observeStatus(s *NodeShell, st raft.Status) *Violation {
 		for i := c.lastCommit[st.ID] + 1; i <= st.CommitIndex; i++ {
 			e, ok := entryAt(s, i)
 			if !ok {
-				return c.fail("node %d committed index %d beyond its durable log (len %d)", st.ID, i, len(s.Log))
+				return c.fail("node %d committed index %d beyond its durable log (len %d)", st.ID, i, len(s.Log()))
 			}
-			if prev, seen := c.committed[i]; seen {
-				if !entriesEqual(prev, e) {
-					return c.fail("state-machine safety: node %d committed %+v at index %d but the cluster committed %+v",
-						st.ID, e, i, prev)
-				}
-			} else {
-				c.committed[i] = e
-				if i > c.maxCommitted {
-					c.maxCommitted = i
-				}
+			if v := c.record(st.ID, e, st.Term, "committed"); v != nil {
+				return v
 			}
 		}
 		c.lastCommit[st.ID] = st.CommitIndex
@@ -193,16 +203,19 @@ func (c *checker) observeStatus(s *NodeShell, st raft.Status) *Violation {
 			c.leaderByTerm[st.Term] = st.ID
 			// Leader Completeness, checked the instant the claim is
 			// recorded — weekends before a client would notice a lost
-			// write: every committed entry must be in the new leader's log.
+			// write: every entry committed in a term BELOW the claimed one
+			// must be in the new leader's log. Entries committed at or
+			// above it are exempt: a stale candidacy completing late (the
+			// pause scenario) may legally lack them.
 			for i := uint64(1); i <= c.maxCommitted; i++ {
 				want, ok := c.committed[i]
-				if !ok {
+				if !ok || want.commitTerm >= st.Term {
 					continue
 				}
 				got, ok := entryAt(s, i)
-				if !ok || !entriesEqual(want, got) {
-					return c.fail("leader completeness: node %d elected leader of term %d without committed entry %+v (has %+v)",
-						st.ID, st.Term, want, got)
+				if !ok || !entriesEqual(want.e, got) {
+					return c.fail("leader completeness: node %d elected leader of term %d without entry %+v committed in term %d (has %+v)",
+						st.ID, st.Term, want.e, want.commitTerm, got)
 				}
 			}
 		}
@@ -221,7 +234,7 @@ func (c *checker) observeLogPair(a, b *NodeShell) *Violation {
 	if key[0] > key[1] {
 		key[0], key[1] = key[1], key[0]
 	}
-	la, lb := uint64(len(a.Log)), uint64(len(b.Log))
+	la, lb := uint64(len(a.Log())), uint64(len(b.Log()))
 	limit := min(la, lb)
 	watermark := c.matchedUpTo[key]
 

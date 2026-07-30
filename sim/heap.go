@@ -19,6 +19,13 @@ const (
 	// EvClientOp marks a client-injected input (Propose) in the trace; it is
 	// synthesized by World.Propose rather than scheduled on the heap.
 	EvClientOp
+	// EvNemesis draws one structural fault (partition, crash, pause) and
+	// reschedules itself.
+	EvNemesis
+	// EvHeal removes all partitions.
+	EvHeal
+	// EvRestart brings a crashed node back up.
+	EvRestart
 )
 
 // Event is one scheduled occurrence.
