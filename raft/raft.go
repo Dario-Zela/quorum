@@ -19,6 +19,14 @@ type Config struct {
 	ElectionTickMin int // default 10
 	ElectionTickMax int // default 20
 	HeartbeatTicks  int // default 3
+
+	// DisablePreVote reverts to paper-basic elections: no pre-vote round
+	// and no CheckQuorum. On by default because together they stop a
+	// rejoining partitioned/restarted node from bumping the term and
+	// deposing a healthy leader, and make an isolated leader step down.
+	// Tests that hand-drive raw election machinery (and the Figure 8
+	// scenario, which deliberately stages the old dynamics) disable them.
+	DisablePreVote bool
 }
 
 // Raft is the pure consensus core. Not safe for concurrent use: Step is
@@ -47,6 +55,13 @@ type Raft struct {
 	// Candidate state: which nodes granted us a vote this term. Only len()
 	// is ever taken — iteration order can never leak into an Output.
 	votesGranted map[NodeID]bool
+
+	// Pre-vote round state (nil = no round in flight), and CheckQuorum
+	// contact tracking (leader only).
+	preVoteOn       bool
+	preVotesGranted map[NodeID]bool
+	contacted       map[NodeID]bool
+	quorumElapsed   int
 
 	// Leader state, keyed by NodeID but only ever iterated via r.peers.
 	nextIndex  map[NodeID]uint64
@@ -130,6 +145,7 @@ func New(cfg Config) *Raft {
 		etMin:          cfg.ElectionTickMin,
 		etMax:          cfg.ElectionTickMax,
 		heartbeatTicks: cfg.HeartbeatTicks,
+		preVoteOn:      !cfg.DisablePreVote,
 	}
 	r.resetElectionTimer()
 	return r
@@ -232,11 +248,60 @@ func (r *Raft) tick(out *Output) {
 			r.heartbeatElapsed = 0
 			r.broadcastAppend(out)
 		}
+		// CheckQuorum: a leader that cannot reach a majority within a full
+		// election-timeout window steps down instead of uselessly serving
+		// a partitioned minority (its reads would already fail, but its
+		// waiters and clients learn faster this way).
+		if r.preVoteOn {
+			r.quorumElapsed++
+			if r.quorumElapsed >= r.etMax {
+				r.quorumElapsed = 0
+				count := 1 // self
+				for _, p := range r.peers {
+					if p != r.id && r.contacted[p] {
+						count++
+					}
+				}
+				r.contacted = make(map[NodeID]bool)
+				if !r.hasMajority(count) {
+					r.becomeFollower(r.term, None)
+					return
+				}
+			}
+		}
 		return
 	}
 	r.electionElapsed++
 	if r.electionElapsed >= r.electionTimeout {
+		if r.preVoteOn {
+			r.startPreVote(out)
+		} else {
+			r.startElection(out)
+		}
+	}
+}
+
+// startPreVote canvasses for a hypothetical election at term+1 without
+// touching term, vote, or role. Only a majority of willing granters
+// converts it into a real election — a node that partitions back into the
+// cluster can no longer bump terms and depose a healthy leader.
+func (r *Raft) startPreVote(out *Output) {
+	r.resetElectionTimer()
+	r.preVotesGranted = map[NodeID]bool{r.id: true}
+	if r.hasMajority(len(r.preVotesGranted)) { // single-node cluster
 		r.startElection(out)
+		return
+	}
+	for _, p := range r.peers {
+		if p == r.id {
+			continue
+		}
+		out.Send = append(out.Send, AddressedMsg{To: p, Msg: PreVote{
+			Term:         r.term + 1,
+			CandidateID:  r.id,
+			LastLogIndex: r.log.LastIndex(),
+			LastLogTerm:  r.log.LastTerm(),
+		}})
 	}
 }
 
@@ -259,6 +324,7 @@ func (r *Raft) startElection(out *Output) {
 	r.hardDirty = true
 	r.leaderHint = None
 	r.votesGranted = map[NodeID]bool{r.id: true}
+	r.preVotesGranted = nil
 	r.resetElectionTimer()
 	if r.hasMajority(len(r.votesGranted)) { // single-node cluster
 		r.becomeLeader(out)
@@ -295,6 +361,8 @@ func (r *Raft) becomeLeader(out *Output) {
 	// toward its majority; forgetting this stalls commits and is invisible
 	// in happy-path tests with fast followers.
 	r.matchIndex[r.id] = r.log.LastIndex()
+	r.contacted = make(map[NodeID]bool)
+	r.quorumElapsed = 0
 	r.noopIndex = 0
 	r.readQueue, r.roundReads, r.roundAcks = nil, nil, nil
 	r.curRound = 0
@@ -328,7 +396,9 @@ func (r *Raft) becomeFollower(term uint64, leader NodeID) {
 	r.role = Follower
 	r.leaderHint = leader
 	r.votesGranted = nil
+	r.preVotesGranted = nil
 	r.nextIndex, r.matchIndex = nil, nil
+	r.contacted = nil
 }
 
 // --- proposals ---
@@ -533,11 +603,28 @@ func msgTerm(m Message) uint64 {
 		return v.Term
 	case InstallSnapshotReply:
 		return v.Term
+	case PreVote:
+		return v.Term
+	case PreVoteReply:
+		return v.Term
 	}
 	panic(fmt.Sprintf("raft: unknown message %T", m))
 }
 
 func (r *Raft) recv(from NodeID, m Message, out *Output) {
+	// Pre-vote traffic is exempt from the uniform term rule below: its
+	// entire purpose is to probe a future term WITHOUT disturbing anyone's
+	// current one. (A higher term inside a PreVoteReply still teaches the
+	// asker — handled in its own handler.)
+	switch v := m.(type) {
+	case PreVote:
+		r.handlePreVote(from, v, out)
+		return
+	case PreVoteReply:
+		r.handlePreVoteReply(from, v, out)
+		return
+	}
+
 	// Term rule, applied uniformly to messages and replies: a higher term
 	// means adopt it, revert to follower, clear votedFor. Step builds
 	// PersistHard at the end, and the caller fsyncs it before Send — so the
@@ -551,6 +638,12 @@ func (r *Raft) recv(from NodeID, m Message, out *Output) {
 			leader = v.LeaderID
 		}
 		r.becomeFollower(t, leader)
+	}
+
+	// CheckQuorum bookkeeping: any same-term message from a peer counts as
+	// contact for the current window.
+	if r.role == Leader && msgTerm(m) == r.term {
+		r.contacted[from] = true
 	}
 
 	switch v := m.(type) {
@@ -569,6 +662,37 @@ func (r *Raft) recv(from NodeID, m Message, out *Output) {
 	}
 }
 
+// handlePreVote grants iff (a) the hypothetical term is ahead of ours,
+// (b) the candidate's log passes the same up-to-date test as a real vote,
+// and (c) we are not being led — we're a leader ourselves, or we've heard
+// from one within the minimum election timeout, means refuse. Grants are
+// not persisted, don't set votedFor, and don't reset timers.
+func (r *Raft) handlePreVote(from NodeID, m PreVote, out *Output) {
+	upToDate := m.LastLogTerm > r.log.LastTerm() ||
+		(m.LastLogTerm == r.log.LastTerm() && m.LastLogIndex >= r.log.LastIndex())
+	beingLed := r.role == Leader || (r.leaderHint != None && r.electionElapsed < r.etMin)
+	grant := m.Term > r.term && upToDate && !beingLed
+	out.Send = append(out.Send, AddressedMsg{To: from, Msg: PreVoteReply{Term: r.term, Granted: grant}})
+}
+
+func (r *Raft) handlePreVoteReply(from NodeID, m PreVoteReply, out *Output) {
+	if m.Term > r.term {
+		// Someone is ahead of us; catch up quietly and abandon the round.
+		r.becomeFollower(m.Term, None)
+		return
+	}
+	if r.preVotesGranted == nil || r.role != Follower {
+		return // no round in flight (or it already converted)
+	}
+	if m.Granted {
+		r.preVotesGranted[from] = true
+		if r.hasMajority(len(r.preVotesGranted)) {
+			r.preVotesGranted = nil
+			r.startElection(out) // the real thing: term++, persisted self-vote
+		}
+	}
+}
+
 // handleInstallSnapshot implements the §4.1 edge cases: a stale snapshot
 // (LastIncludedIndex <= commitIndex) is ignored — it can arrive late
 // through a reordering network; a matching (index, term) entry in our log
@@ -582,6 +706,7 @@ func (r *Raft) handleInstallSnapshot(from NodeID, m InstallSnapshot, out *Output
 		r.becomeFollower(m.Term, m.LeaderID)
 	}
 	r.leaderHint = m.LeaderID
+	r.preVotesGranted = nil // leader contact abandons any pre-vote round
 	r.resetElectionTimer() // valid InstallSnapshot from the current-term leader
 
 	if m.LastIncludedIndex <= r.commitIndex {
@@ -650,6 +775,7 @@ func (r *Raft) handleRequestVote(from NodeID, m RequestVote, out *Output) {
 	if grant {
 		r.votedFor = m.CandidateID
 		r.hardDirty = true // the grant is persisted before the reply leaves
+		r.preVotesGranted = nil
 		r.resetElectionTimer()
 	}
 	out.Send = append(out.Send, AddressedMsg{To: from, Msg: RequestVoteReply{Term: r.term, Granted: grant}})
@@ -678,6 +804,7 @@ func (r *Raft) handleAppendEntries(from NodeID, m AppendEntries, out *Output) {
 		r.becomeFollower(m.Term, m.LeaderID)
 	}
 	r.leaderHint = m.LeaderID
+	r.preVotesGranted = nil // leader contact abandons any pre-vote round
 	r.resetElectionTimer() // valid AppendEntries from the current-term leader
 
 	// Consistency check: our log must contain an entry at PrevLogIndex with

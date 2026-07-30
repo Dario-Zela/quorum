@@ -83,7 +83,7 @@ func TestDedupAcrossLeaderChange(t *testing.T) {
 		w := New(Config{Seed: seed, Clients: 1, ClientOps: 10})
 		crashes := 0
 		for !w.ClientsDone() && w.events < 600_000 {
-			if err := w.Run(w.events+120, nil); err != nil {
+			if err := w.Run(w.events+30, nil); err != nil {
 				t.Fatalf("REPRO: seed=%d — %v", seed, err)
 			}
 			// Strike exactly when the client has a write outstanding on a

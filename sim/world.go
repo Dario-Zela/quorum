@@ -46,6 +46,10 @@ type Config struct {
 	// snapshot once lastApplied outruns the last snapshot by this many
 	// entries (checked on ticks, so it stays deterministic).
 	SnapshotEvery int
+
+	// DisablePreVote runs paper-basic elections (no pre-vote/CheckQuorum),
+	// for scenarios that deliberately stage the old dynamics.
+	DisablePreVote bool
 }
 
 // NodeShell wraps one raft core with its durable storage: what survives a
@@ -135,7 +139,8 @@ func New(cfg Config) *World {
 				Peers: ids,
 				// Distinct deterministic stream per node: two nodes sharing
 				// a stream would correlate their election timeouts.
-				Rand: rand.New(rand.NewSource(cfg.Seed<<8 | int64(id))),
+				Rand:           rand.New(rand.NewSource(cfg.Seed<<8 | int64(id))),
+				DisablePreVote: cfg.DisablePreVote,
 			}),
 		})
 		w.push(Event{At: 1, Kind: EvTick, Node: id})
@@ -225,9 +230,10 @@ func (w *World) Restart(id raft.NodeID) {
 	shell.KV = kv.NewStore()        // volatile: rebuilt by replaying applies
 	shell.Waiters = kv.NewWaiters() // volatile: clients re-learn via timeouts
 	shell.R = raft.Restore(raft.Config{
-		ID:    id,
-		Peers: w.IDs(),
-		Rand:  rand.New(rand.NewSource(w.cfg.Seed<<8 | int64(id) + int64(shell.restarts)*100_003)),
+		ID:             id,
+		Peers:          w.IDs(),
+		Rand:           rand.New(rand.NewSource(w.cfg.Seed<<8 | int64(id) + int64(shell.restarts)*100_003)),
+		DisablePreVote: w.cfg.DisablePreVote,
 	}, raft.RestoredState{
 		Term: st.Term, VotedFor: st.Vote,
 		SnapIndex: st.SnapIndex, SnapTerm: st.SnapTerm, SnapData: st.SnapData,
@@ -680,6 +686,12 @@ func (w *World) assertSendDurable(e Event, shell *NodeShell, send raft.Addressed
 				shell.ID, m.LastIncludedIndex, st.SnapIndex)}
 		}
 	case raft.InstallSnapshotReply:
+		term = m.Term
+	case raft.PreVote:
+		// A pre-vote ASKS about term m.Term without claiming it; it only
+		// requires the CURRENT term (m.Term-1) to be durable.
+		term = m.Term - 1
+	case raft.PreVoteReply:
 		term = m.Term
 	}
 	if term > shell.Term() {

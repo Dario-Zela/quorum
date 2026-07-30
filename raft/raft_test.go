@@ -7,7 +7,9 @@ import (
 
 func newTestRaft(t *testing.T, id NodeID, peers []NodeID, seed int64) *Raft {
 	t.Helper()
-	return New(Config{ID: id, Peers: peers, Rand: rand.New(rand.NewSource(seed))})
+	// Paper-basic elections: these tests hand-drive the raw machinery.
+	// Pre-vote behavior has its own tests in prevote_test.go.
+	return New(Config{ID: id, Peers: peers, Rand: rand.New(rand.NewSource(seed)), DisablePreVote: true})
 }
 
 // tickUntilCandidate ticks until the node starts an election, returning the

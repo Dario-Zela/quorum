@@ -90,6 +90,24 @@ type AppendEntriesReply struct {
 	Round         uint64 // echoed from the AppendEntries being answered
 }
 
+// PreVote asks: "would you vote for me at Term if I ran?" — without
+// disturbing anyone's actual term. Term is the term the candidate WOULD
+// start (currentTerm+1). Pre-votes are never persisted, never set
+// votedFor, and never reset election timers: they are free to grant to
+// many candidates and cost nothing to refuse.
+type PreVote struct {
+	Term         uint64
+	CandidateID  NodeID
+	LastLogIndex uint64
+	LastLogTerm  uint64
+}
+
+// PreVoteReply answers a PreVote.
+type PreVoteReply struct {
+	Term    uint64
+	Granted bool
+}
+
 // InstallSnapshot ships the leader's snapshot to a follower whose log has
 // been compacted away beneath its nextIndex. Single-shot in v1 (chunking:
 // FUTURE.md).
@@ -114,6 +132,8 @@ func (AppendEntries) isMessage()        {}
 func (AppendEntriesReply) isMessage()   {}
 func (InstallSnapshot) isMessage()      {}
 func (InstallSnapshotReply) isMessage() {}
+func (PreVote) isMessage()              {}
+func (PreVoteReply) isMessage()         {}
 
 // Input is an event fed to the core via Step.
 type Input interface{ isInput() }

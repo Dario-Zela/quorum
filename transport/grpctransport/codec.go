@@ -57,6 +57,15 @@ func encode(from raft.NodeID, m raft.Message) *quorumpb.Envelope {
 		env.Msg = &quorumpb.Envelope_InstallSnapshotReply{InstallSnapshotReply: &quorumpb.InstallSnapshotReplyMsg{
 			Term: v.Term, MatchIndex: v.MatchIndex,
 		}}
+	case raft.PreVote:
+		env.Msg = &quorumpb.Envelope_PreVote{PreVote: &quorumpb.PreVoteMsg{
+			Term: v.Term, CandidateId: uint64(v.CandidateID),
+			LastLogIndex: v.LastLogIndex, LastLogTerm: v.LastLogTerm,
+		}}
+	case raft.PreVoteReply:
+		env.Msg = &quorumpb.Envelope_PreVoteReply{PreVoteReply: &quorumpb.PreVoteReplyMsg{
+			Term: v.Term, Granted: v.Granted,
+		}}
 	default:
 		panic(fmt.Sprintf("grpctransport: unmapped message %T", m))
 	}
@@ -96,6 +105,13 @@ func decode(env *quorumpb.Envelope) (raft.NodeID, raft.Message, error) {
 		}, nil
 	case *quorumpb.Envelope_InstallSnapshotReply:
 		return from, raft.InstallSnapshotReply{Term: v.InstallSnapshotReply.Term, MatchIndex: v.InstallSnapshotReply.MatchIndex}, nil
+	case *quorumpb.Envelope_PreVote:
+		return from, raft.PreVote{
+			Term: v.PreVote.Term, CandidateID: raft.NodeID(v.PreVote.CandidateId),
+			LastLogIndex: v.PreVote.LastLogIndex, LastLogTerm: v.PreVote.LastLogTerm,
+		}, nil
+	case *quorumpb.Envelope_PreVoteReply:
+		return from, raft.PreVoteReply{Term: v.PreVoteReply.Term, Granted: v.PreVoteReply.Granted}, nil
 	}
 	return 0, nil, fmt.Errorf("grpctransport: empty or unknown envelope from %d", env.From)
 }

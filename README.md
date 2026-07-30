@@ -20,7 +20,8 @@ every claim is publicly auditable and reproducible by forking the repo
 
 - **Raft from the paper**: leader election, log replication with fast conflict backtracking,
   the §5.4.2 commit rule, persistence with a segmented WAL, snapshots/log compaction with
-  InstallSnapshot.
+  InstallSnapshot — plus **pre-vote and CheckQuorum** (v1.1), so a rejoining node cannot
+  bump terms and depose a healthy leader, and an isolated leader abdicates on its own.
 - **Linearizable KV** (Get/Put/Delete/CAS) over gRPC, with client sessions giving
   *exactly-once effects over at-least-once delivery*, and ReadIndex reads that never touch
   the log.
@@ -167,10 +168,9 @@ production transport or storage.
 
 Deliberate non-goals (membership changes above all — the #1 scope trap) are recorded with
 reasons in [FUTURE.md](FUTURE.md), alongside the acknowledged-but-unbuilt list: chunked
-InstallSnapshot, leadership transfer, lease reads (and why each costs what it costs).
-Next up (v1.1): **pre-vote + CheckQuorum** — the chaos demo visibly exhibits the disease
-they cure, a revived node's inflated term deposing a healthy leader. The full design
-contract is [docs/design.md](docs/design.md); decisions in [docs/adr/](docs/adr/).
+InstallSnapshot, leadership transfer, lease reads (and why each costs what it costs — the
+knowing-why is most of their value). The full design contract is
+[docs/design.md](docs/design.md); decisions in [docs/adr/](docs/adr/).
 
 ## References
 

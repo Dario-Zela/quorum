@@ -120,7 +120,9 @@ func TestSplitVotesHappenAndResolve(t *testing.T) {
 // checkers must catch the moment L2's leadership claim is recorded.
 func figureEight(t *testing.T, seed int64, unsafe bool) *Violation {
 	t.Helper()
-	w := New(Config{Seed: seed})
+	// Paper-basic elections: the trace deliberately stages the dynamics
+	// (term ratcheting by a restarted node) that pre-vote exists to prevent.
+	w := New(Config{Seed: seed, DisablePreVote: true})
 	if unsafe {
 		for _, id := range w.IDs() {
 			w.Node(id).R.EnableUnsafeCommitRuleForTesting()

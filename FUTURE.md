@@ -6,8 +6,6 @@ Knowing *why* each exists (and what it costs) is the point of this file.
 - **Membership changes** (single-server changes, not joint consensus): touches the core, snapshot
   metadata, client discovery, and every invariant's definition of "majority" — exactly why it is
   v1's #1 non-goal. 2+ weekends.
-- **Pre-vote + CheckQuorum**: prevents a rejoining partitioned node from bumping the term and
-  deposing a healthy leader. Core change is small; the real value is the new sim scenarios.
 - **Leadership transfer** (thesis §3.10): makes rolling restarts graceful instead of
   timeout-shaped.
 - **Lease-based reads**: cheaper than ReadIndex, but only safe under bounded clock drift — the
