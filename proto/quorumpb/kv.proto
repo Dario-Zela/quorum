@@ -1,0 +1,36 @@
+// KV commands as they ride the raft log, and the cached responses that
+// live in the replicated session table (and therefore in snapshots).
+syntax = "proto3";
+
+package quorumpb;
+
+option go_package = "github.com/Dario-Zela/quorum/proto/quorumpb";
+
+enum OpType {
+  OP_UNSPECIFIED = 0;
+  OP_REGISTER    = 1; // create a session; ClientID = the entry's log index
+  OP_PUT         = 2;
+  OP_DELETE      = 3;
+  OP_CAS         = 4;
+}
+
+// Command is one replicated state-machine command. Reads (Get) never enter
+// the log — they use the ReadIndex protocol.
+message Command {
+  OpType op        = 1;
+  uint64 client_id = 2; // 0 only for OP_REGISTER
+  uint64 seq       = 3;
+  string key       = 4;
+  string value     = 5;
+  string old_value = 6; // OP_CAS: expected current value
+}
+
+// Result is a command's outcome, cached per-session for dedup. It is part
+// of replicated state: restore a snapshot without it and dedup silently
+// breaks.
+message Result {
+  string value     = 1; // OP_REGISTER: unused; reads use it outside the log
+  bool   cas_ok    = 2;
+  uint64 client_id = 3; // OP_REGISTER: the assigned id
+  uint32 err       = 4; // kv.Err* codes
+}
