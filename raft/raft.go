@@ -56,6 +56,21 @@ type Raft struct {
 	hardDirty    bool
 	truncateFrom uint64
 	appended     []Entry
+
+	// unsafeCommitRule reverts the core to naive Raft: no term clause in
+	// the commit rule and no leader no-op. Exists only so the simulator can
+	// prove the harness catches the Figure 8 bug — see
+	// EnableUnsafeCommitRuleForTesting.
+	unsafeCommitRule bool
+}
+
+// EnableUnsafeCommitRuleForTesting switches this core to the buggy commit
+// rule (count any majority-replicated entry, no §5.4.2 term clause) and
+// disables the new-leader no-op. Poor-man's mutation testing: scenario
+// tests flip this on and assert the invariant checkers DO fire — the
+// harness is itself tested. Never call it outside tests.
+func (r *Raft) EnableUnsafeCommitRuleForTesting() {
+	r.unsafeCommitRule = true
 }
 
 // New creates a follower at term 0 with an empty log.
@@ -98,6 +113,24 @@ func New(cfg Config) *Raft {
 		heartbeatTicks: cfg.HeartbeatTicks,
 	}
 	r.resetElectionTimer()
+	return r
+}
+
+// Restore rebuilds a core from persisted state after a crash-restart: the
+// hard state (term, vote) and the durable log suffix, as recovered by the
+// storage layer. Volatile state — role, commitIndex, lastApplied — is
+// deliberately not restored: commitIndex is rediscovered through the first
+// AppendEntries exchange, and the state machine rebuilds by replay.
+func Restore(cfg Config, term uint64, votedFor NodeID, entries []Entry) *Raft {
+	r := New(cfg)
+	r.term = term
+	r.votedFor = votedFor
+	for i, e := range entries {
+		if e.Index != uint64(i)+1 {
+			panic(fmt.Sprintf("raft: restored log not contiguous from 1: position %d holds index %d", i, e.Index))
+		}
+	}
+	r.log.entries = append([]Entry(nil), entries...)
 	return r
 }
 
@@ -212,9 +245,24 @@ func (r *Raft) becomeLeader(out *Output) {
 	// toward its majority; forgetting this stalls commits and is invisible
 	// in happy-path tests with fast followers.
 	r.matchIndex[r.id] = r.log.LastIndex()
-	// TODO(weekend 2): append the no-op entry for the new term — under the
-	// §5.4.2 commit rule it is the only way prior-term entries ever commit.
+	// The no-op is not an optimization: under the §5.4.2 commit rule it is
+	// the only way prior-term entries ever commit, and ReadIndex is
+	// unserviceable until it commits.
+	if !r.unsafeCommitRule {
+		r.appendToOwnLog(nil)
+		r.maybeCommit(out) // single-node cluster commits immediately
+	}
 	r.broadcastAppend(out)
+}
+
+// appendToOwnLog appends one entry (nil data = the leadership no-op) to the
+// leader's log, records it for persistence, and keeps matchIndex[self] true.
+func (r *Raft) appendToOwnLog(data []byte) Entry {
+	e := Entry{Term: r.term, Index: r.log.LastIndex() + 1, Data: data}
+	r.log.Append(e)
+	r.appended = append(r.appended, e)
+	r.matchIndex[r.id] = e.Index
+	return e
 }
 
 func (r *Raft) becomeFollower(term uint64, leader NodeID) {
@@ -231,44 +279,123 @@ func (r *Raft) becomeFollower(term uint64, leader NodeID) {
 
 // --- proposals ---
 
-// propose is the client write path.
-// TODO(weekend 2): on a leader, append the entry, emit a Receipt, and
-// replicate. For now proposals are dropped; non-leaders will always redirect
-// via the leader hint in Status.
+// propose is the client write path. On a non-leader it yields no Receipt —
+// just the leader hint in Status, which the server layer turns into a
+// redirect. On a leader the entry is appended, a Receipt emitted for the
+// write path's waiter, and replication starts immediately.
 func (r *Raft) propose(data []byte, out *Output) {
-	_ = data
-	_ = out
+	if r.role != Leader {
+		return
+	}
+	e := r.appendToOwnLog(data)
+	out.Proposed = &Receipt{Index: e.Index, Term: e.Term}
+	r.maybeCommit(out) // single-node cluster
+	r.broadcastAppend(out)
 }
 
 // --- replication (leader side) ---
 
-// broadcastAppend sends AppendEntries to every peer. Until replication
-// lands (weekend 2) these are pure heartbeats anchored at the leader's last
-// entry; afterwards each peer gets entries from its nextIndex.
+// broadcastAppend sends AppendEntries to every peer, each from its own
+// nextIndex; a caught-up peer gets an empty append — the heartbeat.
 func (r *Raft) broadcastAppend(out *Output) {
 	for _, p := range r.peers {
 		if p == r.id {
 			continue
 		}
-		out.Send = append(out.Send, AddressedMsg{To: p, Msg: AppendEntries{
-			Term:         r.term,
-			LeaderID:     r.id,
-			PrevLogIndex: r.log.LastIndex(),
-			PrevLogTerm:  r.log.LastTerm(),
-			LeaderCommit: r.commitIndex,
-		}})
+		r.sendAppend(p, out)
 	}
+}
+
+func (r *Raft) sendAppend(p NodeID, out *Output) {
+	next := r.nextIndex[p]
+	prevTerm, ok := r.log.Term(next - 1)
+	if !ok {
+		// nextIndex has fallen below our first retained entry — only
+		// possible after compaction. InstallSnapshot lands in weekend 6.
+		panic("raft: peer needs a snapshot; compaction lands in weekend 6")
+	}
+	out.Send = append(out.Send, AddressedMsg{To: p, Msg: AppendEntries{
+		Term:         r.term,
+		LeaderID:     r.id,
+		PrevLogIndex: next - 1,
+		PrevLogTerm:  prevTerm,
+		Entries:      r.log.Slice(next, r.log.LastIndex()+1),
+		LeaderCommit: r.commitIndex,
+	}})
 }
 
 func (r *Raft) handleAppendEntriesReply(from NodeID, m AppendEntriesReply, out *Output) {
 	if r.role != Leader || m.Term < r.term {
 		return // stale reply
 	}
-	// TODO(weekend 2): advance matchIndex/nextIndex on success, back off via
-	// ConflictIndex/ConflictTerm on failure, and advance commitIndex per the
-	// §5.4.2 rule (majority match AND current-term entry).
-	_ = from
-	_ = out
+	if m.Success {
+		// Replies reorder in flight: only ever advance.
+		if m.MatchIndex > r.matchIndex[from] {
+			r.matchIndex[from] = m.MatchIndex
+			r.nextIndex[from] = m.MatchIndex + 1
+			r.maybeCommit(out)
+		}
+		return
+	}
+	// Fast backtracking: if we have entries in ConflictTerm, resume after
+	// our last entry of that term; otherwise jump to ConflictIndex.
+	next := m.ConflictIndex
+	if m.ConflictTerm != 0 {
+		if li, ok := r.log.lastIndexOfTerm(m.ConflictTerm); ok {
+			next = li + 1
+		}
+	}
+	if next < 1 {
+		next = 1
+	}
+	// A reordered stale rejection must never drag nextIndex below what the
+	// follower has already acknowledged.
+	if next <= r.matchIndex[from] {
+		next = r.matchIndex[from] + 1
+	}
+	r.nextIndex[from] = next
+	r.sendAppend(from, out)
+}
+
+// maybeCommit advances commitIndex to the highest N where a majority of
+// matchIndex >= N AND log[N].Term == currentTerm — the §5.4.2 subtlety:
+// never commit prior-term entries by counting replicas (Figure 8). They
+// still replicate eagerly; they just can't be counted until the election
+// no-op commits above them.
+func (r *Raft) maybeCommit(out *Output) {
+	for n := r.log.LastIndex(); n > r.commitIndex; n-- {
+		t, ok := r.log.Term(n)
+		if !ok {
+			return
+		}
+		if t < r.term && !r.unsafeCommitRule {
+			return // everything below is older still — nothing can commit
+		}
+		if t > r.term {
+			panic("raft: log entry from the future")
+		}
+		count := 0
+		for _, p := range r.peers {
+			if r.matchIndex[p] >= n {
+				count++
+			}
+		}
+		if r.hasMajority(count) {
+			r.commitIndex = n
+			r.emitApply(out)
+			return
+		}
+	}
+}
+
+// emitApply hands newly committed entries to the caller for the state
+// machine. Apply may lag arbitrarily behind commit — that only delays
+// reads, never safety.
+func (r *Raft) emitApply(out *Output) {
+	if r.commitIndex > r.lastApplied {
+		out.ApplyEntries = append(out.ApplyEntries, r.log.Slice(r.lastApplied+1, r.commitIndex+1)...)
+		r.lastApplied = r.commitIndex
+	}
 }
 
 // --- message handling (follower side) ---
@@ -368,22 +495,49 @@ func (r *Raft) handleAppendEntries(from NodeID, m AppendEntries, out *Output) {
 		return
 	}
 	if prevTerm != m.PrevLogTerm {
-		// TODO(weekend 2): report ConflictTerm and its first index for
-		// term-granular backtracking.
+		// Term mismatch at PrevLogIndex: report that term and its first
+		// index so the leader can skip the whole term in one round trip.
 		out.Send = append(out.Send, AddressedMsg{To: from, Msg: AppendEntriesReply{
 			Term: r.term, Success: false,
-			ConflictIndex: m.PrevLogIndex, ConflictTerm: prevTerm,
+			ConflictIndex: r.log.firstIndexOfTerm(m.PrevLogIndex, prevTerm),
+			ConflictTerm:  prevTerm,
 		}})
 		return
 	}
-	if len(m.Entries) > 0 {
-		// TODO(weekend 2): append with conflict-truncation.
-		panic("raft: entry replication lands in weekend 2")
+
+	// Append, truncating at the first conflict. Entries that already match
+	// are skipped, never re-truncated — a reordered older append must not
+	// chop off newer entries it doesn't know about.
+	insert := m.PrevLogIndex + 1
+	i := 0
+	for ; i < len(m.Entries); i++ {
+		idx := insert + uint64(i)
+		t, ok := r.log.Term(idx)
+		if !ok {
+			break // our log ends here; append the rest
+		}
+		if t != m.Entries[i].Term {
+			r.log.TruncateFrom(idx)
+			// Truncation is itself a logged event: an append-only WAL
+			// cannot physically delete the conflicting suffix, so recovery
+			// must replay the disowning or the node resurrects entries it
+			// already disowned to its leader.
+			r.truncateFrom = idx
+			break
+		}
 	}
-	// TODO(weekend 2): advance commitIndex from LeaderCommit and emit
-	// ApplyEntries.
+	if rest := m.Entries[i:]; len(rest) > 0 {
+		r.log.Append(rest...)
+		r.appended = append(r.appended, rest...)
+	}
+
+	lastNew := m.PrevLogIndex + uint64(len(m.Entries))
+	if m.LeaderCommit > r.commitIndex {
+		r.commitIndex = min(m.LeaderCommit, lastNew)
+		r.emitApply(out)
+	}
 	out.Send = append(out.Send, AddressedMsg{To: from, Msg: AppendEntriesReply{
 		Term: r.term, Success: true,
-		MatchIndex: m.PrevLogIndex + uint64(len(m.Entries)),
+		MatchIndex: lastNew,
 	}})
 }

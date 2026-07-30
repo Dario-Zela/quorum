@@ -44,8 +44,10 @@ func (l *raftLog) Term(i uint64) (term uint64, ok bool) {
 	return l.entries[i-l.first].Term, true
 }
 
-// Slice returns entries in [lo, hi). Callers must stay within
-// (firstIndex-1, LastIndex()+1); the result aliases the log's backing array.
+// Slice returns a copy of entries in [lo, hi). Callers must stay within
+// (firstIndex-1, LastIndex()+1). Copying matters: the result rides in
+// messages and Outputs that outlive the next TruncateFrom/Append, which
+// would otherwise scribble over the shared backing array.
 func (l *raftLog) Slice(lo, hi uint64) []Entry {
 	if lo < l.first || hi > l.LastIndex()+1 {
 		panic(fmt.Sprintf("raftLog: slice [%d,%d) out of bounds [%d,%d]", lo, hi, l.first, l.LastIndex()))
@@ -53,7 +55,34 @@ func (l *raftLog) Slice(lo, hi uint64) []Entry {
 	if lo >= hi {
 		return nil
 	}
-	return l.entries[lo-l.first : hi-l.first]
+	return append([]Entry(nil), l.entries[lo-l.first:hi-l.first]...)
+}
+
+// firstIndexOfTerm walks back from i (which must hold term t) to the first
+// index of that term still in the log. Used to fill ConflictIndex.
+func (l *raftLog) firstIndexOfTerm(i uint64, t uint64) uint64 {
+	for i > l.first {
+		prev, ok := l.Term(i - 1)
+		if !ok || prev != t {
+			break
+		}
+		i--
+	}
+	return i
+}
+
+// lastIndexOfTerm finds the last entry with term t, scanning from the tail.
+// ok is false when the log holds no entry of that term.
+func (l *raftLog) lastIndexOfTerm(t uint64) (uint64, bool) {
+	for i := len(l.entries) - 1; i >= 0; i-- {
+		if l.entries[i].Term == t {
+			return l.entries[i].Index, true
+		}
+		if l.entries[i].Term < t {
+			break // terms are non-decreasing along the log
+		}
+	}
+	return 0, false
 }
 
 // Append adds entries at the tail. Entries must be contiguous with the log.
