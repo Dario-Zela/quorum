@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quorum — chaos demo, continuously verified</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font: 15px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+         background:#0d1117; color:#c9d1d9; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.4rem; color:#e6edf3; }
+  h1 .ok { color:#3fb950; }
+  a { color:#58a6ff; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+  th, td { text-align: left; padding: .45rem .7rem; border-bottom: 1px solid #21262d; white-space: nowrap; }
+  th { color:#8b949e; font-weight: 600; }
+  tr:hover td { background:#161b22; }
+  .muted { color:#8b949e; }
+  .pill { display:inline-block; padding:.05rem .5rem; border-radius:999px; font-size:.85em; }
+  .pass { background:#12261e; color:#3fb950; border:1px solid #238636; }
+  .fail { background:#2d1214; color:#f85149; border:1px solid #da3633; }
+  pre { background:#161b22; padding: .8rem 1rem; border-radius: 8px; overflow-x: auto; }
+  .note { border-left: 3px solid #30363d; padding-left: .8rem; margin: 1.2rem 0; color:#8b949e; }
+</style>
+</head>
+<body>
+<h1>quorum <span class="ok">/</span> chaos demo, continuously verified</h1>
+<p>
+  Every run below is a <b>5-node Raft cluster</b> booted from scratch on a GitHub Actions
+  runner, put under closed-loop client load while a chaos script repeatedly
+  <b>kills the current leader</b>. The claim being verified: throughput dips and recovers,
+  and <b>no completed write is ever lost</b>. Each row links to the full, publicly
+  auditable log of that run.
+</p>
+<div class="note">
+  Numbers come from shared CI runners — treat them as <i>indicative</i>, not as benchmarks.
+  Source, design doc, and the deterministic simulation harness that does the real
+  verification: <a href="https://github.com/Dario-Zela/quorum">github.com/Dario-Zela/quorum</a>.
+</div>
+
+<table id="runs">
+  <thead><tr>
+    <th>when (UTC)</th><th>commit</th><th>result</th><th>leader kills</th>
+    <th>ops</th><th>errors</th><th>ops/s</th><th>p50</th><th>p99</th><th>log</th>
+  </tr></thead>
+  <tbody></tbody>
+</table>
+<p class="muted" id="empty" hidden>No runs recorded yet — the nightly workflow will populate this.</p>
+
+<h2>Reproduce it yourself</h2>
+<p>No trust required — fork the repo and run the same workflow on your own runner:</p>
+<pre>1. Fork github.com/Dario-Zela/quorum
+2. Actions tab → enable workflows
+3. "Chaos demo" → Run workflow</pre>
+<p>Or locally with Docker:</p>
+<pre>cd deploy
+docker compose up -d --build
+docker compose run --rm bench          # load generator
+INTERVAL=30 ./chaos.sh                 # leader-killing loop
+docker compose exec node1 quorum-cli -cluster \
+  "1=node1:7201,2=node2:7201,3=node3:7201,4=node4:7201,5=node5:7201" watch</pre>
+
+<script>
+fetch('./runs.json', {cache: 'no-store'})
+  .then(r => r.ok ? r.json() : [])
+  .then(runs => {
+    const tb = document.querySelector('#runs tbody');
+    if (!runs.length) { document.getElementById('empty').hidden = false; return; }
+    for (const r of runs.slice().reverse()) {
+      const tr = document.createElement('tr');
+      const ok = (r.errs === 0 && r.ops > 0);
+      tr.innerHTML =
+        `<td>${r.when}</td>` +
+        `<td><a href="https://github.com/Dario-Zela/quorum/commit/${r.commit}">${r.commit.slice(0,7)}</a></td>` +
+        `<td><span class="pill ${ok ? 'pass' : 'fail'}">${ok ? 'survived' : 'check log'}</span></td>` +
+        `<td>${r.kills}</td><td>${r.ops}</td><td>${r.errs}</td>` +
+        `<td>${r.throughput}</td><td>${r.p50}</td><td>${r.p99}</td>` +
+        `<td><a href="${r.run_url}">actions log</a></td>`;
+      tb.appendChild(tr);
+    }
+  })
+  .catch(() => { document.getElementById('empty').hidden = false; });
+</script>
+</body>
+</html>
