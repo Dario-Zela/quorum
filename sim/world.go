@@ -101,6 +101,10 @@ type World struct {
 	// In-flight ReadIndex requests: ctx → who asked, for which key.
 	readCtx      uint64
 	pendingReads map[uint64]pendingRead
+
+	// readProbe captures ReadReady answers for directed scenario tests:
+	// register a ctx with a nil value, read the answer when it fills.
+	readProbe map[uint64]*raft.ReadState
 }
 
 type pendingRead struct {
@@ -609,6 +613,11 @@ func (w *World) stepNode(e Event, shell *NodeShell, in raft.Input) raft.Output {
 	}
 
 	for _, rs := range out.ReadReady {
+		if _, probed := w.readProbe[rs.Ctx]; probed {
+			rsCopy := rs
+			w.readProbe[rs.Ctx] = &rsCopy
+			continue
+		}
 		pr, ok := w.pendingReads[rs.Ctx]
 		if !ok {
 			continue
@@ -678,6 +687,14 @@ func (w *World) assertSendDurable(e Event, shell *NodeShell, send raft.Addressed
 		}
 	case raft.AppendEntriesReply:
 		term = m.Term
+		// The ack claims our log matches the leader through MatchIndex —
+		// acknowledging entries that aren't fsynced yet is the archetypal
+		// persist-before-send violation.
+		if m.Success && m.MatchIndex > lastDurableIndex(shell) {
+			return &Violation{w.now, e.Seq, fmt.Sprintf(
+				"persist-before-send: node %d acks entries through %d but its durable tail is %d",
+				shell.ID, m.MatchIndex, lastDurableIndex(shell))}
+		}
 	case raft.InstallSnapshot:
 		term = m.Term
 		if st := shell.Store.State(); st.SnapIndex < m.LastIncludedIndex {
@@ -687,6 +704,11 @@ func (w *World) assertSendDurable(e Event, shell *NodeShell, send raft.Addressed
 		}
 	case raft.InstallSnapshotReply:
 		term = m.Term
+		if m.MatchIndex > lastDurableIndex(shell) {
+			return &Violation{w.now, e.Seq, fmt.Sprintf(
+				"persist-before-send: node %d acks a snapshot through %d but its durable tail is %d",
+				shell.ID, m.MatchIndex, lastDurableIndex(shell))}
+		}
 	case raft.PreVote:
 		// A pre-vote ASKS about term m.Term without claiming it; it only
 		// requires the CURRENT term (m.Term-1) to be durable.

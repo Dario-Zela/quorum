@@ -99,8 +99,8 @@ with a retryable error; the client resends the **same** `{ClientID, Seq}`; the n
 proposes it *again* (dedup never happens at propose time — that races with in-flight
 applies); the apply loop sees `Seq ≤ lastSeq` and returns the cached response. Two log
 entries, one state mutation, one client-visible effect — porcupine sees a single `Put`.
-The test crashes leaders precisely when a write is in flight, ten times per seed, and
-CAS-chained workloads make any double-apply un-linearizable.
+The test crashes leaders precisely when a write is in flight, up to six times per seed,
+and CAS-chained workloads make any double-apply un-linearizable.
 (`TestDedupAcrossLeaderChange`)
 
 ## Numbers (honest ones)
