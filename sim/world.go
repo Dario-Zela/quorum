@@ -30,6 +30,9 @@ type NodeShell struct {
 	Term uint64      // persisted
 	Vote raft.NodeID // persisted
 	Log  []raft.Entry
+
+	down     bool
+	restarts int
 }
 
 func (s *NodeShell) persist(hs *raft.HardState) {
@@ -117,6 +120,55 @@ func (w *World) Violation() *Violation { return w.violation }
 // Trace returns the recorded event trace (empty unless cfg.Trace).
 func (w *World) Trace() string { return w.trace.String() }
 
+// Crash takes a node down: volatile state is lost, durable state (what
+// passed through PersistHard) is kept. Its ticks stop and deliveries to it
+// are dropped until Restart.
+func (w *World) Crash(id raft.NodeID) {
+	shell := w.Node(id)
+	shell.down = true
+	w.tracef("t=%d crash node=%d", w.now, id)
+}
+
+// Restart brings a crashed node back as a follower, rebuilt from its
+// durable state, with a fresh (but deterministically derived) rng stream.
+func (w *World) Restart(id raft.NodeID) {
+	shell := w.Node(id)
+	if !shell.down {
+		panic("sim: restarting a node that is not down")
+	}
+	shell.down = false
+	shell.restarts++
+	shell.R = raft.Restore(raft.Config{
+		ID:    id,
+		Peers: w.IDs(),
+		Rand:  rand.New(rand.NewSource(w.cfg.Seed<<8 | int64(id) + int64(shell.restarts)*100_003)),
+	}, shell.Term, shell.Vote, append([]raft.Entry(nil), shell.Log...))
+	w.check.observeRestart(id)
+	w.tracef("t=%d restart node=%d term=%d vote=%d log=%d", w.now, id, shell.Term, shell.Vote, len(shell.Log))
+	w.push(Event{At: w.now + 1, Kind: EvTick, Node: id})
+}
+
+// Propose injects a client proposal at the current virtual time, returning
+// the Receipt if the node accepted it (i.e. believes itself leader).
+func (w *World) Propose(id raft.NodeID, data []byte) (raft.Receipt, bool) {
+	shell := w.Node(id)
+	e := Event{At: w.now, Seq: w.seq, Kind: EvClientOp, Node: id}
+	w.seq++
+	w.tracef("t=%d #%d propose node=%d data=%q", e.At, e.Seq, id, data)
+	out := w.stepNode(e, shell, raft.Propose{Data: data})
+	if out.Proposed == nil {
+		return raft.Receipt{}, false
+	}
+	return *out.Proposed, true
+}
+
+// CommittedEntry returns the entry the cluster committed at index i, as
+// tracked by the invariant checker.
+func (w *World) CommittedEntry(i uint64) (raft.Entry, bool) { return w.check.CommittedEntry(i) }
+
+// SplitVoteTerms counts terms in which more than one candidate stood.
+func (w *World) SplitVoteTerms() int { return w.check.SplitVoteTerms() }
+
 // AnyLeader reports a node currently in the Leader role, preferring the
 // highest term if several stale leaders coexist.
 func (w *World) AnyLeader() (raft.NodeID, bool) {
@@ -165,9 +217,16 @@ func (w *World) stepOnce() {
 
 	switch e.Kind {
 	case EvTick:
+		if shell.down {
+			return // ticks die with the node; Restart schedules a new one
+		}
 		w.stepNode(e, shell, raft.Tick{})
 		w.push(Event{At: e.At + 1, Kind: EvTick, Node: e.Node})
 	case EvDeliver:
+		if shell.down {
+			w.tracef("t=%d #%d drop(down) %d->%d %T%+v", e.At, e.Seq, e.From, e.Node, e.Msg, e.Msg)
+			return
+		}
 		// Reachability is checked at delivery, not send: a partition that
 		// forms while a message is in flight eats it, and healing never
 		// resurrects it.
@@ -184,11 +243,15 @@ func (w *World) stepOnce() {
 // PersistHard → Send → ApplyEntries. The persist-before-send assertion
 // lives here: after persisting, every outbound message must be justified by
 // durable state, so processing sends first would trip it.
-func (w *World) stepNode(e Event, shell *NodeShell, in raft.Input) {
+func (w *World) stepNode(e Event, shell *NodeShell, in raft.Input) raft.Output {
 	out := shell.R.Step(in)
+	w.check.at(w.now, e.Seq)
 
 	if out.PersistHard != nil {
 		shell.persist(out.PersistHard)
+		if out.PersistHard.TruncateFrom > 0 {
+			w.check.observeTruncate(shell.ID, out.PersistHard.TruncateFrom)
+		}
 		w.tracef("t=%d #%d persist node=%d term=%d vote=%d trunc=%d app=%d",
 			e.At, e.Seq, shell.ID, out.PersistHard.Term, out.PersistHard.VotedFor,
 			out.PersistHard.TruncateFrom, len(out.PersistHard.Append))
@@ -197,21 +260,35 @@ func (w *World) stepNode(e Event, shell *NodeShell, in raft.Input) {
 	for _, send := range out.Send {
 		if v := w.assertSendDurable(e, shell, send); v != nil {
 			w.violation = v
-			return
+			return out
 		}
 		delay := LogicalTime(1 + w.rng.Intn(w.cfg.MaxLatency))
 		w.tracef("t=%d #%d send %d->%d +%d %T%+v", e.At, e.Seq, shell.ID, send.To, delay, send.Msg, send.Msg)
 		w.push(Event{At: e.At + delay, Kind: EvDeliver, Node: send.To, From: shell.ID, Msg: send.Msg})
 	}
 
-	// ApplyEntries: consumed by the replicated state machine from weekend 4.
+	for _, applied := range out.ApplyEntries {
+		w.tracef("t=%d #%d apply node=%d %+v", e.At, e.Seq, shell.ID, applied)
+		if w.violation == nil {
+			w.violation = w.check.observeApply(shell.ID, applied)
+		}
+	}
 
 	st := shell.R.Status()
 	w.tracef("t=%d #%d status node=%d role=%v term=%d commit=%d last=%d",
 		e.At, e.Seq, st.ID, st.Role, st.Term, st.CommitIndex, st.LastIndex)
 	if w.violation == nil {
-		w.violation = w.check.observe(w.now, e.Seq, st)
+		w.violation = w.check.observeStatus(shell, st)
 	}
+	for _, other := range w.nodes {
+		if w.violation != nil {
+			break
+		}
+		if other.ID != shell.ID {
+			w.violation = w.check.observeLogPair(shell, other)
+		}
+	}
+	return out
 }
 
 // assertSendDurable machine-checks the persist-before-send rule: any

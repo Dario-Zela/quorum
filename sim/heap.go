@@ -16,6 +16,9 @@ const (
 	// drop = never scheduled, duplicate = scheduled twice, reorder =
 	// independent latency draws.
 	EvDeliver
+	// EvClientOp marks a client-injected input (Propose) in the trace; it is
+	// synthesized by World.Propose rather than scheduled on the heap.
+	EvClientOp
 )
 
 // Event is one scheduled occurrence.
