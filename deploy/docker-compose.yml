@@ -1,0 +1,56 @@
+# 5-node quorum cluster + load generator.
+#
+#   docker compose up -d --build
+#   docker compose run --rm bench
+#   ./chaos.sh          # kill the leader every 30s, watch it survive
+
+x-node: &node
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+  image: quorum:latest
+  restart: unless-stopped
+
+x-peers: &peers "1=node1:7101,2=node2:7101,3=node3:7101,4=node4:7101,5=node5:7101"
+
+services:
+  node1:
+    <<: *node
+    command: ["-id", "1", "-data", "/data", "-listen-peer", ":7101", "-listen-client", ":7201", "-listen-metrics", ":2112", "-peers", *peers]
+    volumes: ["data1:/data"]
+    ports: ["7201:7201", "21121:2112"]
+  node2:
+    <<: *node
+    command: ["-id", "2", "-data", "/data", "-listen-peer", ":7101", "-listen-client", ":7201", "-listen-metrics", ":2112", "-peers", *peers]
+    volumes: ["data2:/data"]
+    ports: ["7202:7201", "21122:2112"]
+  node3:
+    <<: *node
+    command: ["-id", "3", "-data", "/data", "-listen-peer", ":7101", "-listen-client", ":7201", "-listen-metrics", ":2112", "-peers", *peers]
+    volumes: ["data3:/data"]
+    ports: ["7203:7201", "21123:2112"]
+  node4:
+    <<: *node
+    command: ["-id", "4", "-data", "/data", "-listen-peer", ":7101", "-listen-client", ":7201", "-listen-metrics", ":2112", "-peers", *peers]
+    volumes: ["data4:/data"]
+    ports: ["7204:7201", "21124:2112"]
+  node5:
+    <<: *node
+    command: ["-id", "5", "-data", "/data", "-listen-peer", ":7101", "-listen-client", ":7201", "-listen-metrics", ":2112", "-peers", *peers]
+    volumes: ["data5:/data"]
+    ports: ["7205:7201", "21125:2112"]
+
+  # One-shot load generator: docker compose run --rm bench
+  bench:
+    image: quorum:latest
+    profiles: ["tools"]
+    entrypoint: ["quorum-cli"]
+    command: ["-cluster", "1=node1:7201,2=node2:7201,3=node3:7201,4=node4:7201,5=node5:7201",
+              "bench", "-clients", "32", "-duration", "30s"]
+
+volumes:
+  data1: {}
+  data2: {}
+  data3: {}
+  data4: {}
+  data5: {}

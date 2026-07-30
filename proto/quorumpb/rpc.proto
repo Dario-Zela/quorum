@@ -1,0 +1,102 @@
+// Wire protocol: raft message envelopes between peers, and the client-facing
+// KV + status services.
+syntax = "proto3";
+
+package quorumpb;
+
+import "proto/quorumpb/kv.proto";
+import "proto/quorumpb/wal.proto";
+
+option go_package = "github.com/Dario-Zela/quorum/proto/quorumpb";
+
+// Envelope carries one raft message. Transport is fire-and-forget one-way
+// streams: replies are separate envelopes on the peer's own outbound
+// stream, mirroring the core's message-passing model.
+message Envelope {
+  uint64 from = 1;
+  oneof msg {
+    RequestVoteMsg       request_vote        = 2;
+    RequestVoteReplyMsg  request_vote_reply  = 3;
+    AppendEntriesMsg     append_entries      = 4;
+    AppendEntriesReplyMsg append_entries_reply = 5;
+  }
+}
+
+message RequestVoteMsg {
+  uint64 term           = 1;
+  uint64 candidate_id   = 2;
+  uint64 last_log_index = 3;
+  uint64 last_log_term  = 4;
+}
+
+message RequestVoteReplyMsg {
+  uint64 term    = 1;
+  bool   granted = 2;
+}
+
+message AppendEntriesMsg {
+  uint64 term           = 1;
+  uint64 leader_id      = 2;
+  uint64 prev_log_index = 3;
+  uint64 prev_log_term  = 4;
+  repeated Entry entries = 5;
+  uint64 leader_commit  = 6;
+  uint64 round          = 7;
+}
+
+message AppendEntriesReplyMsg {
+  uint64 term           = 1;
+  bool   success        = 2;
+  uint64 match_index    = 3;
+  uint64 conflict_index = 4;
+  uint64 conflict_term  = 5;
+  uint64 round          = 6;
+}
+
+service RaftTransport {
+  // Deliver is a one-way stream of envelopes from one peer.
+  rpc Deliver(stream Envelope) returns (DeliverAck);
+}
+
+message DeliverAck {}
+
+// --- client-facing ---
+
+message DoRequest {
+  Command cmd = 1;
+  // stale_read serves OP_GET from local state with no protocol — any node,
+  // no linearizability. Offered for the benchmark contrast table.
+  bool stale_read = 2;
+}
+
+enum DoStatus {
+  DO_OK = 0;
+  // Not the leader; leader_hint may name one. Retry there.
+  DO_NOT_LEADER = 1;
+  // Leadership was lost with the op in flight; it MAY still commit.
+  // Retry with the SAME seq — dedup collapses it.
+  DO_RETRY = 2;
+}
+
+message DoReply {
+  Result   result      = 1;
+  DoStatus status      = 2;
+  uint64   leader_hint = 3;
+}
+
+message StatusRequest {}
+
+message StatusReply {
+  uint64 id           = 1;
+  string role         = 2;
+  uint64 term         = 3;
+  uint64 commit_index = 4;
+  uint64 last_applied = 5;
+  uint64 last_index   = 6;
+  uint64 leader_hint  = 7;
+}
+
+service QuorumKV {
+  rpc Do(DoRequest) returns (DoReply);
+  rpc Status(StatusRequest) returns (StatusReply);
+}
