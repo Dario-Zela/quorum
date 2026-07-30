@@ -35,6 +35,13 @@ var castagnoli = crc32.MakeTable(crc32.Castagnoli)
 // Options tunes a WAL; the zero value takes defaults.
 type Options struct {
 	SegmentLimit int64
+
+	// UnsafeNoSync skips the per-Persist fsync (segment rolls and
+	// snapshots still sync). Exists ONLY for the benchmark contrast table:
+	// running with it is cheating — an acknowledged write can vanish in a
+	// crash, which is precisely the guarantee this project exists to keep.
+	// Enabled by QUORUM_UNSAFE_NO_FSYNC=1.
+	UnsafeNoSync bool
 }
 
 // WAL implements storage.Store over segment files, plus snapshots.
@@ -50,6 +57,7 @@ type WAL struct {
 	lastVote  raft.NodeID // fresh segment after snapshot-driven segment GC
 	snapIndex uint64
 	segMax    map[int]uint64 // closed segment seq → max entry index it holds
+	noSync    bool           // Options.UnsafeNoSync
 }
 
 // Open recovers the WAL in dir (creating it if empty) and returns the
@@ -72,7 +80,7 @@ func Open(dir string, opts Options) (*WAL, storage.State, error) {
 		return nil, storage.State{}, err
 	}
 
-	w := &WAL{dir: dir, limit: opts.SegmentLimit, segMax: make(map[int]uint64)}
+	w := &WAL{dir: dir, limit: opts.SegmentLimit, segMax: make(map[int]uint64), noSync: opts.UnsafeNoSync}
 	var st storage.State
 
 	// (1) Load the newest snapshot passing its checksum.
@@ -290,8 +298,10 @@ func (w *WAL) Persist(hs *raft.HardState) error {
 	if _, err := w.active.Write(batch); err != nil {
 		return err
 	}
-	if err := w.active.Sync(); err != nil {
-		return err
+	if !w.noSync {
+		if err := w.active.Sync(); err != nil {
+			return err
+		}
 	}
 	w.size += int64(len(batch))
 	return nil

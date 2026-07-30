@@ -12,6 +12,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -122,7 +123,7 @@ func Run(cfg Config, logger *slog.Logger) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	w, st, err := wal.Open(cfg.DataDir, wal.Options{})
+	w, st, err := wal.Open(cfg.DataDir, wal.Options{UnsafeNoSync: os.Getenv("QUORUM_UNSAFE_NO_FSYNC") == "1"})
 	if err != nil {
 		return nil, fmt.Errorf("wal: %w", err)
 	}

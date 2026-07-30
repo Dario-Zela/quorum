@@ -1,0 +1,100 @@
+name: Chaos demo
+
+# The demo is a CI job (ADR-003): boot the real 5-node compose cluster on a
+# runner, put it under client load, kill the leader repeatedly, and publish
+# the outcome to the status page. Nightly + manual dispatch; no public
+# trigger — fork the repo and Run workflow to reproduce.
+
+on:
+  schedule:
+    - cron: "43 4 * * *" # 04:43 UTC nightly
+  workflow_dispatch:
+
+permissions:
+  contents: write # push results to gh-pages
+
+jobs:
+  chaos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Boot 5-node cluster
+        working-directory: deploy
+        run: |
+          docker compose up -d --build
+          for i in $(seq 1 30); do
+            if docker compose exec -T node1 quorum-cli -cluster "1=node1:7201,2=node2:7201,3=node3:7201,4=node4:7201,5=node5:7201" status | grep -q leader; then
+              echo "cluster up"; break
+            fi
+            sleep 2
+          done
+          docker compose exec -T node1 quorum-cli -cluster "1=node1:7201,2=node2:7201,3=node3:7201,4=node4:7201,5=node5:7201" status
+
+      - name: Load + leader-killing chaos loop
+        working-directory: deploy
+        run: |
+          docker compose run --rm bench -cluster "1=node1:7201,2=node2:7201,3=node3:7201,4=node4:7201,5=node5:7201" \
+            bench -clients 32 -duration 150s -reads 0.5 | tee bench.out &
+          BENCH_PID=$!
+          INTERVAL=25 ROUNDS=5 ./chaos.sh | tee chaos.out
+          wait $BENCH_PID
+          docker compose exec -T node1 quorum-cli -cluster "1=node1:7201,2=node2:7201,3=node3:7201,4=node4:7201,5=node5:7201" status | tee final-status.out
+
+      - name: Extract results
+        id: results
+        working-directory: deploy
+        run: |
+          OPS=$(grep -o 'ops=[0-9]*' bench.out | head -1 | cut -d= -f2)
+          ERRS=$(grep -o 'errs=[0-9]*' bench.out | head -1 | cut -d= -f2)
+          THR=$(grep -o 'throughput=[0-9.]*' bench.out | cut -d= -f2)
+          P50=$(grep -o 'p50=[^ ]*' bench.out | cut -d= -f2)
+          P99=$(grep -o 'p99=[^ ]*' bench.out | cut -d= -f2)
+          KILLS=$(grep -c 'killing leader' chaos.out || true)
+          echo "ops=$OPS errs=$ERRS thr=$THR p50=$P50 p99=$P99 kills=$KILLS"
+          {
+            echo "ops=$OPS"; echo "errs=$ERRS"; echo "throughput=$THR"
+            echo "p50=$P50"; echo "p99=$P99"; echo "kills=$KILLS"
+          } >> "$GITHUB_OUTPUT"
+          # The demo's promise: completed writes never error out.
+          test "$ERRS" = "0"
+          test "$KILLS" -ge 3
+
+      - name: Publish to status page
+        run: |
+          git fetch origin gh-pages || true
+          if git show-ref --quiet refs/remotes/origin/gh-pages; then
+            git worktree add pages origin/gh-pages
+          else
+            git worktree add --orphan -b gh-pages pages
+          fi
+          cp deploy/statuspage/index.html pages/
+          cd pages
+          RUNS=$( [ -f runs.json ] && cat runs.json || echo '[]' )
+          echo "$RUNS" | jq --arg when "$(date -u +'%Y-%m-%d %H:%M')" \
+            --arg commit "$GITHUB_SHA" \
+            --arg url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --argjson ops "${{ steps.results.outputs.ops }}" \
+            --argjson errs "${{ steps.results.outputs.errs }}" \
+            --arg thr "${{ steps.results.outputs.throughput }}" \
+            --arg p50 "${{ steps.results.outputs.p50 }}" \
+            --arg p99 "${{ steps.results.outputs.p99 }}" \
+            --argjson kills "${{ steps.results.outputs.kills }}" \
+            '. + [{when:$when, commit:$commit, run_url:$url, ops:$ops, errs:$errs, throughput:$thr, p50:$p50, p99:$p99, kills:$kills}] | .[-60:]' \
+            > runs.json
+          git config user.name "chaos-demo[bot]"
+          git config user.email "actions@github.com"
+          git add index.html runs.json
+          git commit -m "chaos demo run $GITHUB_RUN_ID"
+          git push origin HEAD:gh-pages
+
+      - name: Upload raw logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaos-demo-logs
+          path: |
+            deploy/bench.out
+            deploy/chaos.out
+            deploy/final-status.out

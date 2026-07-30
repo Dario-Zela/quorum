@@ -25,6 +25,7 @@ func main() {
 		listenClient  = flag.String("listen-client", ":7201", "client service listen address")
 		listenMetrics = flag.String("listen-metrics", "", "prometheus /metrics listen address (empty = off)")
 		peers         = flag.String("peers", "", "comma-separated id=host:port peer map (must include self)")
+		snapEntries   = flag.Int("snapshot-entries", 0, "compact after this many applied entries (0 = default 10000)")
 	)
 	flag.Parse()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -41,7 +42,8 @@ func main() {
 		cfg = server.Config{
 			ID: *id, DataDir: *dataDir,
 			ListenPeer: *listenPeer, ListenClient: *listenClient, ListenMetrics: *listenMetrics,
-			Peers: map[string]string{},
+			SnapshotEntries: *snapEntries,
+			Peers:           map[string]string{},
 		}
 		for _, kvp := range strings.Split(*peers, ",") {
 			parts := strings.SplitN(strings.TrimSpace(kvp), "=", 2)
