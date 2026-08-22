@@ -262,5 +262,16 @@
     "p50": "13.875957ms",
     "p99": "74.31643ms",
     "kills": 5
+  },
+  {
+    "when": "2026-08-22 05:05",
+    "commit": "3d20f0e18b4dae92e676b561e6a63a899753107b",
+    "run_url": "https://github.com/Dario-Zela/quorum/actions/runs/32553312075",
+    "ops": 177627,
+    "errs": 0,
+    "throughput": "1184",
+    "p50": "15.001443ms",
+    "p99": "78.899618ms",
+    "kills": 5
   }
 ]
