@@ -1,16 +1,5 @@
 [
   {
-    "when": "2026-08-01 07:14",
-    "commit": "3d20f0e18b4dae92e676b561e6a63a899753107b",
-    "run_url": "https://github.com/Dario-Zela/quorum/actions/runs/30689222182",
-    "ops": 185109,
-    "errs": 7,
-    "throughput": "1234",
-    "p50": "15.243042ms",
-    "p99": "76.122624ms",
-    "kills": 5
-  },
-  {
     "when": "2026-08-02 07:17",
     "commit": "3d20f0e18b4dae92e676b561e6a63a899753107b",
     "run_url": "https://github.com/Dario-Zela/quorum/actions/runs/30737418597",
@@ -657,6 +646,17 @@
     "throughput": "1233",
     "p50": "11.967527ms",
     "p99": "79.99888ms",
+    "kills": 5
+  },
+  {
+    "when": "2026-09-30 10:45",
+    "commit": "3d20f0e18b4dae92e676b561e6a63a899753107b",
+    "run_url": "https://github.com/Dario-Zela/quorum/actions/runs/36704052139",
+    "ops": 312917,
+    "errs": 0,
+    "throughput": "2086",
+    "p50": "4.753061ms",
+    "p99": "55.229463ms",
     "kills": 5
   }
 ]
